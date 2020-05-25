@@ -1,0 +1,15 @@
+[submodule "ros-thymio"]
+    path = src/ros-thymio
+    url = https://github.com/jeguzzi/ros-thymio
+    branch = master
+
+[submodule "thymioid"]
+    path = src/thymioid
+    url = https://github.com/jeguzzi/thymioid/
+    branch = ros2
+
+[submodule "docker-ros-box"]
+    path = utility/docker_test/docker-ros-box
+    url = https://github.com/pierrekilly/docker-ros-box.git
+
+

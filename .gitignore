@@ -1,0 +1,10 @@
+build/
+install/
+log/
+
+.vscode/
+.idea/
+*.code-workspace
+
+*/__pycache__/
+*.pyc
