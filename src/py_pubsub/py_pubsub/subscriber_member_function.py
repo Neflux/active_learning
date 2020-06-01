@@ -13,7 +13,10 @@
 # limitations under the License.
 
 import rclpy
+from nav_msgs.msg import Odometry
 from rclpy.node import Node
+from sensor_msgs.msg import Range
+from tf2_msgs.msg import TFMessage
 
 from tutorial_interfaces.msg import Num        # CHANGE
 from std_msgs.msg import String
@@ -22,16 +25,16 @@ from std_msgs.msg import String
 class MinimalSubscriber(Node):
 
     def __init__(self):
+        print("test asd ")
         super().__init__('minimal_subscriber')
         self.subscription = self.create_subscription(
-            Num,
-            'topic',
+            Odometry,
+            '/thymioX/ground_truth/odom',
             self.listener_callback,
-            10)
-        self.subscription  # prevent unused variable warning
+            1)
 
     def listener_callback(self, msg):
-        self.get_logger().info('I heard: "%d"' % msg.num) # CHANGE
+        self.get_logger().info(str(msg))
 
 def main(args=None):
     rclpy.init(args=args)

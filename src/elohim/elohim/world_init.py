@@ -1,9 +1,12 @@
+import json
 import os
 from pathlib import Path
 
 import numpy as np
 import rclpy
-from elohim.utils import get_resource, handy_pose, generate_map
+from ament_index_python import get_package_share_directory
+from elohim.service_utils import AsyncServiceCaller
+from elohim.topic_utils import VirtualSensor
 from elohim.utils import get_resource, handy_pose, generate_map
 from gazebo_msgs.srv import SpawnEntity, DeleteEntity, GetModelList
 from std_srvs.srv import Empty
@@ -32,8 +35,9 @@ def main(args=None):
     # Spawn pickup targets
 
     target = "coke_can"
-    # TODO: copy it in the local folder /models, now that everything works
-    xml_sdf = get_resource(target, root=os.path.join(Path('~').expanduser(), ".gazebo/models"))
+    # xml_sdf = get_resource(target, root=os.path.join(Path('~').expanduser(), ".gazebo/models"))
+    xml_sdf = get_resource(target, root=os.path.join(get_package_share_directory('elohim'), 'models'))
+
     def spawn_target(x, y):
         theta = np.random.uniform(0, np.pi * 2)
         asc(srv=SpawnEntity, srv_namespace="spawn_entity",
@@ -43,20 +47,12 @@ def main(args=None):
                 "initial_pose": handy_pose(x, y, theta)
             })
 
-    spawn_coords, targets = generate_map(0xDEADBEEF)
+    _, targets = generate_map(0xDEADBEEF)
 
     for i in range(len(targets)):
         spawn_target(*targets[i])
 
     asc(srv=Empty, srv_namespace="unpause_physics")
-
-    virtual_sensor = VirtualSensor(targets=random_positions, threshold=1)
-
-    rclpy.spin(virtual_sensor)
-
-    virtual_sensor.destroy_node()
-
-    rclpy.shutdown()
 
 
 if __name__ == '__main__':

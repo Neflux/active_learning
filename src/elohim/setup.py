@@ -14,8 +14,7 @@ setup(
                    ('share/' + package_name, ['package.xml'])]
                + [("share/" + package_name + "/" + d, [os.path.join(d, f) for f in files]) for d, _, files in
                   os.walk("models")]
-     + [("share/" + package_name + "/" + d, [os.path.join(d, f) for f in files]) for d, _, files in os.walk("worlds")]
-    #+ [('share/' + package_name + '/launch', glob('launch/*.launch'))]
+    + [('share/' + package_name + '/worlds', glob('worlds/*.world'))]
     , install_requires=['setuptools'],
     zip_safe=True,
     maintainer='Stefano Bonato',

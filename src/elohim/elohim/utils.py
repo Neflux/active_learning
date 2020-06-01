@@ -4,7 +4,7 @@ import os
 import numpy as np
 from ament_index_python import get_package_share_directory
 from elohim.poisson_disc import Grid
-from geometry_msgs.msg import Pose, Point
+from geometry_msgs.msg import Pose, Point, Twist, Quaternion
 
 
 def generate_map(seed):
@@ -31,7 +31,7 @@ def generate_map(seed):
     print(f"Spawn points generated: {len(spawn_coords)}, \
             pick up targets: {n_targets}, radius: {threshold}")
 
-    with open(os.path.join(get_package_share_directory('elohim'), 'targets.json'), 'w') as f:
+    with open(os.path.join(get_package_share_directory('elohim'), 'points.json'), 'w') as f:
         json.dump({"targets": [{"x": x[0], "y": x[1]} for x in targets],
                    "spawn_coords": [{"x": x[0], "y": x[1]} for x in spawn_coords]}, f)
 
@@ -48,25 +48,10 @@ def get_resource(name, root=None):
         return f.read()
 
 
-
 def euler_to_quaternion(yaw, pitch, roll):
-    qx = np.sin(roll / 2) * np.cos(pitch / 2) * np.cos(yaw / 2) - np.cos(roll / 2) * np.sin(pitch / 2) * np.sin(yaw / 2)
-    qy = np.cos(roll / 2) * np.sin(pitch / 2) * np.cos(yaw / 2) + np.sin(roll / 2) * np.cos(pitch / 2) * np.sin(yaw / 2)
-    qz = np.cos(roll / 2) * np.cos(pitch / 2) * np.sin(yaw / 2) - np.sin(roll / 2) * np.sin(pitch / 2) * np.cos(yaw / 2)
-    qw = np.cos(roll / 2) * np.cos(pitch / 2) * np.cos(yaw / 2) + np.sin(roll / 2) * np.sin(pitch / 2) * np.sin(yaw / 2)
+    x = np.sin(roll / 2) * np.cos(pitch / 2) * np.cos(yaw / 2) - np.cos(roll / 2) * np.sin(pitch / 2) * np.sin(yaw / 2)
+    y = np.cos(roll / 2) * np.sin(pitch / 2) * np.cos(yaw / 2) + np.sin(roll / 2) * np.cos(pitch / 2) * np.sin(yaw / 2)
+    z = np.cos(roll / 2) * np.cos(pitch / 2) * np.sin(yaw / 2) - np.sin(roll / 2) * np.sin(pitch / 2) * np.cos(yaw / 2)
+    w = np.cos(roll / 2) * np.cos(pitch / 2) * np.cos(yaw / 2) + np.sin(roll / 2) * np.sin(pitch / 2) * np.sin(yaw / 2)
 
-    return qx, qy, qz, qw
-
-
-def handy_pose(x, y, theta):
-    p = Pose()
-    p.position = Point()
-    p.position.x = x
-    p.position.y = y
-    p.position.z = 0.
-    qx, qy, qz, qw = euler_to_quaternion(theta, 0., 0.)
-    p.orientation.x = qx
-    p.orientation.y = qy
-    p.orientation.z = qz
-    p.orientation.w = qw
-    return p
+    return Quaternion(x=x, y=y, z=z, w=w)

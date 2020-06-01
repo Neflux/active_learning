@@ -1,5 +1,6 @@
 from gazebo_msgs.srv._delete_entity import DeleteEntity_Response
 from gazebo_msgs.srv._get_model_list import GetModelList_Response
+from gazebo_msgs.srv._set_entity_state import SetEntityState_Response
 from gazebo_msgs.srv._spawn_entity import SpawnEntity_Response
 from rclpy.node import Node
 
@@ -56,3 +57,5 @@ def response_interpreter(logger, res):
         logger.info(res.status_message)
     elif isinstance(res, GetModelList_Response):
         logger.info("Models: " + ", ".join(res.model_names))
+    #elif isinstance(res, SetEntityState_Response):
+    #    logger.info(res.success)
