@@ -100,32 +100,31 @@ def main(args=None):
     angles = np.linspace(0, np.pi * 2, 360 // 2)
     keyboard_interrupt = False
     for spawn in spawn_coords:
-        #for t in angles:
-        t = np.arctan2(-spawn[1], -spawn[0])
-        es.pose = Pose(position=Point(x=spawn[0], y=spawn[1], z=0.), orientation=euler_to_quaternion(t, 0., 0.))
-        response = asc(srv=SetEntityState,
-                       srv_namespace="ros_state/set_entity_state",  # namespace set in empty_libstate.world
-                       request_dict={"state": es})
-        print(f"Spawning thymio in ({spawn[0]:.2f}, {spawn[1]:.2f}, {t:.2f}), status: {response.success})")
+        for t in angles:
+            es.pose = Pose(position=Point(x=spawn[0], y=spawn[1], z=0.), orientation=euler_to_quaternion(t, 0., 0.))
+            response = asc(srv=SetEntityState,
+                           srv_namespace="ros_state/set_entity_state",  # namespace set in empty_libstate.world
+                           request_dict={"state": es})
+            print(f"Spawning thymio in ({spawn[0]:.2f}, {spawn[1]:.2f}, {t:.2f}), status: {response.success})")
 
-        random_controller.should_reset = False
-        random_controller.go()
-        try:
-            while rclpy.ok():
-                rclpy.spin_once(random_controller)
+            random_controller.should_reset = False
+            random_controller.go()
+            try:
+                while rclpy.ok():
+                    rclpy.spin_once(random_controller)
 
-                if random_controller.should_reset:
-                    break
+                    if random_controller.should_reset:
+                        break
 
-                #random_controller.rate.sleep()
-        except KeyboardInterrupt:
-            print(" Stopping thymio and signal broadcasting")
-            keyboard_interrupt = True
+                    #random_controller.rate.sleep()
+            except KeyboardInterrupt:
+                print(" Stopping thymio and signal broadcasting")
+                keyboard_interrupt = True
+                break
+            finally:
+                random_controller.stop()
+        if keyboard_interrupt:
             break
-        finally:
-            random_controller.stop()
-    #if keyboard_interrupt:
-    #   break
 
     random_controller.destroy_node()
     rclpy.shutdown()
