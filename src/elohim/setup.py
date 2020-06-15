@@ -25,7 +25,8 @@ setup(
     entry_points={
         'console_scripts': [
             'init = elohim.world_init:main',
-            'start = elohim.random_controller:main'
+            'start = elohim.random_controller:main',
+            'record = elohim.historia:main',
         ],
     },
 )

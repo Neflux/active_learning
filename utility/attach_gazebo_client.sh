@@ -1,0 +1,1 @@
+ros2 launch gazebo_ros gzclient.launch.py verbose:=true

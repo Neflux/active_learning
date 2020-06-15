@@ -18,7 +18,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Range
 from tf2_msgs.msg import TFMessage
 
-from tutorial_interfaces.msg import Num        # CHANGE
+from tutorial_interfaces.msg import Num  # CHANGE
 from std_msgs.msg import String
 
 
@@ -31,10 +31,11 @@ class MinimalSubscriber(Node):
             Odometry,
             '/thymioX/ground_truth/odom',
             self.listener_callback,
-            1)
+            10)
 
     def listener_callback(self, msg):
         self.get_logger().info(str(msg))
+
 
 def main(args=None):
     rclpy.init(args=args)

@@ -32,8 +32,10 @@ class RandomController(Node):
         self.robot_name = robot_name
         self.raw_rate = rate
         self.qos = rclpy_.qos.QoSProfile(depth=self.raw_rate,
-                                         reliability=rclpy_.qos.QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT)
-        #self.rate = self.create_rate(self.raw_rate)
+                                         reliability=rclpy.qos.QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT)
+
+        # TODO: not working
+        # self.rate = self.create_rate(self.raw_rate)
 
         self.twist_publisher = self.create_publisher(Twist, f'/{robot_name}/cmd_vel', qos_profile=self.raw_rate)
 
@@ -54,7 +56,7 @@ class RandomController(Node):
         euc_dist = cdist([[pos.x, pos.y]], self.targets)[0]
         signal = int(any(euc_dist < self.signal_threshold))
         self.signal_publisher.publish(Num(num=signal))
-        #self.get_logger().info(f'{self.robot_name} sensor: {signal}')
+        # self.get_logger().info(f'{self.robot_name} sensor: {signal}')
 
         if any(abs(x) > self.plane_side for x in [pos.x, pos.y]):
             self.should_reset = True
@@ -66,7 +68,7 @@ class RandomController(Node):
 
     def go(self):
         self.twist_publisher.publish(self.go_twist)
-        self.get_logger().info(f'{self.robot_name}: to infinity and beyond {self.go_twist.linear.x}')
+        self.get_logger().info(f'{self.robot_name}: to infinity and beyond')
 
     def stop(self, verbose=True):
         self.twist_publisher.publish(self.stop_twist)
@@ -83,51 +85,52 @@ def main(args=None):
             points = json.load(f)
         spawn_coords = np.array([[t["x"], t["y"]] for t in points["spawn_coords"]])
         targets = np.array([[t["x"], t["y"]] for t in points["targets"]])
+
+        asc = AsyncServiceCaller(rclpy)
+
+        random_controller = RandomController(rclpy_=rclpy, targets=targets)
+        random_controller.stop(verbose=False)
+
+        es = EntityState()
+        es.name = random_controller.robot_name
+        angles = np.linspace(0, np.pi * 2, 360 // 2)
+        keyboard_interrupt = False
+        for spawn in spawn_coords:
+            for t in angles:
+                es.pose = Pose(position=Point(x=spawn[0], y=spawn[1]), orientation=euler_to_quaternion(yaw=t))
+                response = asc(srv=SetEntityState,
+                               srv_namespace="ros_state/set_entity_state",  # namespace set in empty_libstate.world
+                               request_dict={"state": es})
+                print(f"Spawning thymio in ({spawn[0]:.2f}, {spawn[1]:.2f}, {t:.2f}), status: {response.success})")
+
+                random_controller.should_reset = False
+                random_controller.go()
+                try:
+                    while rclpy.ok():
+                        rclpy.spin_once(random_controller)
+
+                        if random_controller.should_reset:
+                            break
+
+                        # TODO: why deadlock with this syncronization?
+                        # random_controller.rate.sleep()
+                except KeyboardInterrupt:
+                    print(" Stopping thymio and signal broadcasting")
+                    keyboard_interrupt = True
+                    break
+                finally:
+                    random_controller.stop()
+            if keyboard_interrupt:
+                break
+
+        random_controller.destroy_node()
+
     except FileNotFoundError:
         print(f"Cannot find points.json file (at {os.path.dirname(points_file)})")
         print("Have you set up your environment at least once after your latest clean rebuild?"
               "\n\tros2 run elohim init")
+    finally:
         rclpy.shutdown()
-        exit(-1)
-
-    asc = AsyncServiceCaller(rclpy)
-
-    random_controller = RandomController(rclpy_=rclpy, targets=targets)
-    random_controller.stop(verbose=False)
-
-    es = EntityState()
-    es.name = random_controller.robot_name
-    angles = np.linspace(0, np.pi * 2, 360 // 2)
-    keyboard_interrupt = False
-    for spawn in spawn_coords:
-        for t in angles:
-            es.pose = Pose(position=Point(x=spawn[0], y=spawn[1], z=0.), orientation=euler_to_quaternion(t, 0., 0.))
-            response = asc(srv=SetEntityState,
-                           srv_namespace="ros_state/set_entity_state",  # namespace set in empty_libstate.world
-                           request_dict={"state": es})
-            print(f"Spawning thymio in ({spawn[0]:.2f}, {spawn[1]:.2f}, {t:.2f}), status: {response.success})")
-
-            random_controller.should_reset = False
-            random_controller.go()
-            try:
-                while rclpy.ok():
-                    rclpy.spin_once(random_controller)
-
-                    if random_controller.should_reset:
-                        break
-
-                    #random_controller.rate.sleep()
-            except KeyboardInterrupt:
-                print(" Stopping thymio and signal broadcasting")
-                keyboard_interrupt = True
-                break
-            finally:
-                random_controller.stop()
-        if keyboard_interrupt:
-            break
-
-    random_controller.destroy_node()
-    rclpy.shutdown()
 
 
 if __name__ == '__main__':

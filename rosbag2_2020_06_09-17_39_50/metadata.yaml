@@ -1,0 +1,26 @@
+rosbag2_bagfile_information:
+  version: 2
+  storage_identifier: sqlite3
+  relative_file_paths:
+    - rosbag2_2020_06_09-17_39_50/rosbag2_2020_06_09-17_39_50_0.db3
+  duration:
+    nanoseconds: 5945708775
+  starting_time:
+    nanoseconds_since_epoch: 1591717190485984964
+  message_count: 118
+  topics_with_message_count:
+    - topic_metadata:
+        name: /thymioX/head_camera/image_raw
+        type: sensor_msgs/msg/Image
+        serialization_format: cdr
+      message_count: 0
+    - topic_metadata:
+        name: /thymioX/ground_truth/odom
+        type: nav_msgs/msg/Odometry
+        serialization_format: cdr
+      message_count: 0
+    - topic_metadata:
+        name: /thymioX/odom
+        type: nav_msgs/msg/Odometry
+        serialization_format: cdr
+      message_count: 118

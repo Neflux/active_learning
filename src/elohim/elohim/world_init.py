@@ -6,9 +6,9 @@ import numpy as np
 import rclpy
 from ament_index_python import get_package_share_directory
 from elohim.service_utils import AsyncServiceCaller
-from elohim.topic_utils import VirtualSensor
-from elohim.utils import get_resource, handy_pose, generate_map
+from elohim.utils import get_resource, generate_map, euler_to_quaternion
 from gazebo_msgs.srv import SpawnEntity, DeleteEntity, GetModelList
+from geometry_msgs.msg import Pose, Point
 from std_srvs.srv import Empty
 
 
@@ -44,7 +44,7 @@ def main(args=None):
             request_dict={
                 "name": f"{target}{i}",
                 "xml": xml_sdf,
-                "initial_pose": handy_pose(x, y, theta)
+                "initial_pose": Pose(position=Point(x=x, y=y), orientation=euler_to_quaternion(yaw=theta))
             })
 
     _, targets = generate_map(0xDEADBEEF)
