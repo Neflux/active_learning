@@ -10,7 +10,7 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import QoSReliabilityPolicy
 from sensor_msgs.msg import Image
-from tutorial_interfaces.msg import Num
+from std_msgs.msg import Bool
 
 from elohim.utils import binary_from_ndarray
 
@@ -72,7 +72,7 @@ def main(args=None):
                                                              'focus': odom_focus},
                                        'head_camera/image_raw': {'type': Image, 'qos': 30, 'reliability': best_effort,
                                                                  'focus': lambda msg: [binary_from_ndarray(msg.data)]},
-                                       'virtual_sensor/signal': {'type': Num, 'qos': 10, 'focus': lambda msg: msg.num}})
+                                       'virtual_sensor/signal': {'type': Bool, 'qos': 10, 'focus': lambda msg: msg.num}})
     try:
         rclpy.spin(recorder)
     except KeyboardInterrupt:

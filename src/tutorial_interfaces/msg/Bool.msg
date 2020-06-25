@@ -1,1 +1,0 @@
-bool is_in_range
