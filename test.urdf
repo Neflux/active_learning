@@ -770,10 +770,10 @@
       <update_rate>30.0</update_rate>
       <always_on>1</always_on>
       <camera name="head_camera">
-        <horizontal_fov>0.786</horizontal_fov>
+        <horizontal_fov>1.5708</horizontal_fov>
         <image>
-          <width>640</width>
-          <height>480</height>
+          <width>320</width>
+          <height>240</height>
           <format>R8G8B8</format>
         </image>
         <clip>

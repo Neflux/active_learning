@@ -1,5 +1,6 @@
-cd /usr/local/opt/bullet/lib/
-for i in *89.dylib
+cd /usr/local/opt/icu4c/lib/
+for i in *67.*.dylib
 do
-ln -s "$i" "${i::${#i}-7}8.dylib"
+echo "$i --> ${i::${#i}-9}6.dylib"
+ln -s "$i" "${i::${#i}-9}6.dylib"
 done

@@ -13,7 +13,7 @@ from nav_msgs.msg import Odometry
 
 from rclpy.node import Node
 from scipy.spatial.distance import cdist
-from tutorial_interfaces.msg import Num
+from std_msgs.msg import Bool
 
 
 class RandomController(Node):
@@ -47,15 +47,15 @@ class RandomController(Node):
         self.ground_truth_sub = self.create_subscription(Odometry, f'/{self.robot_name}/ground_truth/odom',
                                                          self.pose_update, qos_profile=self.qos)
 
-        self.signal_publisher = self.create_publisher(Num, f'/{robot_name}/virtual_sensor/signal',
+        self.signal_publisher = self.create_publisher(Bool, f'/{robot_name}/virtual_sensor/signal',
                                                       qos_profile=self.raw_rate)
 
     def pose_update(self, msg):
         pos = msg.pose.pose.position
 
         euc_dist = cdist([[pos.x, pos.y]], self.targets)[0]
-        signal = int(any(euc_dist < self.signal_threshold))
-        self.signal_publisher.publish(Num(num=signal))
+        signal = any(euc_dist < self.signal_threshold)
+        self.signal_publisher.publish(Bool(data=signal))
         # self.get_logger().info(f'{self.robot_name} sensor: {signal}')
 
         if any(abs(x) > self.plane_side for x in [pos.x, pos.y]):

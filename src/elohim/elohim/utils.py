@@ -1,11 +1,12 @@
+import io
 import json
 import os
 
 import numpy as np
 from ament_index_python import get_package_share_directory
 from elohim.poisson_disc import Grid
-from geometry_msgs.msg import Pose, Point, Twist, Quaternion
-
+from geometry_msgs.msg import Quaternion
+import math
 
 def generate_map(seed):
     np.random.seed(seed)
@@ -48,10 +49,46 @@ def get_resource(name, root=None):
         return f.read()
 
 
-def euler_to_quaternion(yaw=0, pitch=0, roll=0):
+def euler_to_quaternion(roll=0, pitch=0, yaw=0):
     x = np.sin(roll / 2) * np.cos(pitch / 2) * np.cos(yaw / 2) - np.cos(roll / 2) * np.sin(pitch / 2) * np.sin(yaw / 2)
     y = np.cos(roll / 2) * np.sin(pitch / 2) * np.cos(yaw / 2) + np.sin(roll / 2) * np.cos(pitch / 2) * np.sin(yaw / 2)
     z = np.cos(roll / 2) * np.cos(pitch / 2) * np.sin(yaw / 2) - np.sin(roll / 2) * np.sin(pitch / 2) * np.cos(yaw / 2)
     w = np.cos(roll / 2) * np.cos(pitch / 2) * np.cos(yaw / 2) + np.sin(roll / 2) * np.sin(pitch / 2) * np.sin(yaw / 2)
 
     return Quaternion(x=x, y=y, z=z, w=w)
+
+
+def quaternion_to_euler(q):
+
+    # roll x
+    t0 = +2.0 * (q.w * q.x + q.y * q.z)
+    t1 = +1.0 - 2.0 * (q.x * q.x + q.y * q.y)
+    X = math.atan2(t0, t1)
+
+    t2 = +2.0 * (q.w * q.y - q.z * q.x)
+    t2 = +1.0 if t2 > +1.0 else t2
+    t2 = -1.0 if t2 < -1.0 else t2
+    Y = math.asin(t2)
+
+    t3 = +2.0 * (q.w * q.z + q.x * q.y)
+    t4 = +1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+    Z = math.atan2(t3, t4)
+
+    # result = {'roll': roll, 'pitch': pitch, 'yaw': yaw}
+    # if dict:
+    #    return result
+
+    return X, Y, Z
+
+
+def binary_from_ndarray(msg):
+    memfile = io.BytesIO()
+    np.save(memfile, msg)
+    memfile.seek(0)
+    return memfile.read().decode('latin-1')
+
+def ndarray_from_binary(serialized):
+    memfile = io.BytesIO()
+    memfile.write(serialized.encode('latin-1'))
+    memfile.seek(0)
+    return np.load(memfile)
