@@ -2,6 +2,7 @@ import io
 import json
 import os
 
+import cv2
 import numpy as np
 from ament_index_python import get_package_share_directory
 from elohim.poisson_disc import Grid
@@ -80,15 +81,16 @@ def quaternion_to_euler(q):
 
     return X, Y, Z
 
+def binary_from_cv(cv2_img):
+    retval, buf = cv2.imencode('.JPEG', cv2_img,  [cv2.IMWRITE_JPEG_QUALITY, 50, cv2.IMWRITE_JPEG_OPTIMIZE,1])
+    with io.BytesIO() as memfile:
+        np.save(memfile, buf)
+        memfile.seek(0)
+        return memfile.read().decode('latin-1')
 
-def binary_from_ndarray(msg):
-    memfile = io.BytesIO()
-    np.save(memfile, msg)
-    memfile.seek(0)
-    return memfile.read().decode('latin-1')
-
-def ndarray_from_binary(serialized):
-    memfile = io.BytesIO()
-    memfile.write(serialized.encode('latin-1'))
-    memfile.seek(0)
-    return np.load(memfile)
+def cv_from_binary(serialized):
+    with io.BytesIO() as memfile:
+        memfile.write(serialized.encode('latin-1'))
+        memfile.seek(0)
+        buf = np.load(memfile)
+    return cv2.imdecode(buf, flags=cv2.IMREAD_UNCHANGED)
