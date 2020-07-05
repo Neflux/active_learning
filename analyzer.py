@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 from ament_index_python import get_package_share_directory
-from matplotlib import axes, figure, transforms
+from matplotlib import axes, figure, transforms, animation
 from matplotlib.animation import FuncAnimation
 from matplotlib.collections import LineCollection
 from matplotlib.colors import ListedColormap
@@ -26,12 +26,14 @@ from utils import cv_from_binary
 
 d45 = np.pi / 4
 
-
 class Animator:
-    def __init__(self, df, static_targets, side=10, rate=60, save_path=None):
+    def __init__(self, df, static_targets, side=10, rate=30, save_path=None):
         self.rate = rate
         self.length = 10
         self.fov_segments = 40
+
+        Writer = animation.writers['ffmpeg']
+        writer = Writer(fps=rate, metadata=dict(artist='Me'), bitrate=1800)
 
         # Cache
 
@@ -89,9 +91,8 @@ class Animator:
             fov_area, clip_path = gradient_area(color)
             ax1.add_patch(clip_path)
             fov_area.set_clip_path(clip_path)
-            varss = vars()  # TODO: SO UGLY! you are not this desperate
-            return dict(
-                [(i, varss[i]) for i in ('thymio', 'sensor_radius', 'intent', 'lc1', 'lc2', 'fov_area', 'clip_path')])
+            return {'thymio': thymio, 'sensor_radius': sensor_radius, 'intent': intent, 'lc1': lc1,
+                    'lc2': lc2, 'fov_area': fov_area, 'clip_path': clip_path}
 
         self.gt_artists = thymio('blue', pl.cm.Blues_r)
         self.odom_artists = thymio('orange', pl.cm.Oranges_r)
@@ -110,11 +111,13 @@ class Animator:
         self.anim = FuncAnimation(fig, self.animate, frames=len(df), interval=1000. / rate, blit=True,
                                   init_func=self.init, repeat=True)
 
-        plt.show()
-        # if save_path is not None:
-        #     plt.show(block=False)
-        #     ani.save(f"{save_path[0]}/{save_path[1]}.mp4", fps=rate, extra_args=['-vcodec', 'libx264'])
-        # else:
+        if save_path is None:
+            plt.show()
+        else:
+            self.anim.save(f"{save_path[0]}/{save_path[1]}.mp4", writer=writer,
+                           progress_callback=lambda i, n: print(f'\rSaving: {i * 100. / n:.2f} %', end=''))
+            print(f"\rSaving process complete. File location: {save_path[0]}/{save_path[1]}.mp4")
+
 
     def init(self):
         for artist in [self.gt_artists, self.odom_artists]:
@@ -135,12 +138,10 @@ class Animator:
             x, y, theta = positional_data[i]
 
             artist['thymio'].set_data([x], [y])
-
             artist['intent'].set_data((x, x + cos(theta)), (y, y + sin(theta)))
 
             t = np.c_[[x, y], [x, y]].T + self.length * np.array([np.cos(theta + (d45 * np.array([-1, 1]))),
                                                                   np.sin(theta + (d45 * np.array([-1, 1])))]).T
-
             def segments(x, y, t):
                 tx, ty = t
                 rx = np.linspace(x, tx, self.fov_segments)
@@ -211,16 +212,7 @@ def mergedfs(dfs, tolerance='1s'):
     return result
 
 
-points_file = os.path.join(get_package_share_directory('elohim'), 'points.json')
 
-try:
-    with open(points_file) as f:
-        points = json.load(f)
-    targets = np.array([[t["x"], t["y"]] for t in points["targets"]])
-except FileNotFoundError:
-    print(f"Cannot find points.json file (at {os.path.dirname(points_file)})")
-    print("Have you set up your environment at least once after your latest clean rebuild?"
-          "\n\tros2 run elohim init")
 
 
 def reset_odom_run(df, instructions):
@@ -263,38 +255,52 @@ def reset_odom_run(df, instructions):
     return df
 
 
-# TODO: handy argparse command to select last run available
-for dir in list(os.scandir('history')):
-    fp_files = glob.glob(f'{dir.path}/*.h5')
-    files = [os.path.basename(x) for x in fp_files]
+points_file = os.path.join(get_package_share_directory('elohim'), 'points.json')
+try:
+    with open(points_file) as f:
+        points = json.load(f)
+    targets = np.array([[t["x"], t["y"]] for t in points["targets"]])
 
-    if len(files) == 5 and 'summary.hdf5' not in files:
+    for dir in list(os.scandir('history')):
+        fp_files = glob.glob(f'{dir.path}/*.h5')
+        files = [os.path.basename(x) for x in fp_files]
 
-        last_snapshot = None
-        while last_snapshot is None:
-            try:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=PerformanceWarning)
-                    last_snapshot = {f: pd.read_hdf(f) for f in fp_files}
-            except Exception as ex:
-                print("Recorder is currently locking the file, trying again in 1 second")
-                time.sleep(1)
+        if len(files) == 5 and 'summary.hdf5' not in files:
 
-        # print(dir.path)
-        df = mergedfs(last_snapshot)
+            last_snapshot = None
+            while last_snapshot is None:
+                try:
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings("ignore", category=PerformanceWarning)
+                        last_snapshot = {f: pd.read_hdf(f) for f in fp_files}
+                except Exception as ex:
+                    print("Recorder is probably locking the file, trying again in 3 second")
+                    time.sleep(3)
 
-        # Remove meaningless runs
-        df = df[df['run'].map(df['run'].value_counts()) > 10]
+            # print(dir.path)
+            df = mergedfs(last_snapshot)
 
-        # window = min(500, len(df) - 1)
-        # start = np.random.randint(len(df) - window)
-        # df = df.reset_index().loc[start:start + window, :]
-        instructions = {'translation': [('ground_truth_odom_x', 'x'),
-                                        ('ground_truth_odom_y', 'y')],
-                        'rotation': ('ground_truth_odom_theta', 'theta')}
-        df = reset_odom_run(df, instructions)
+            # Remove meaningless runs
+            df = df[df['run'].map(df['run'].value_counts()) > 10]
 
-        # Fix timezone
-        df.index = df.index.tz_localize('UTC').tz_convert('Europe/Rome')
+            # Reset odometry at the start of each run
+            instructions = {'translation': [('ground_truth_odom_x', 'x'),
+                                            ('ground_truth_odom_y', 'y')],
+                            'rotation': ('ground_truth_odom_theta', 'theta')}
+            df = reset_odom_run(df, instructions)
 
-        Animator(df, targets, save_path=(dir.path, 'sim'), rate=120)
+            # Fix timezone
+            df.index = df.index.tz_localize('UTC').tz_convert('Europe/Rome')
+
+            # Select a random window of 10 sec for a preview video
+            rate = 30
+            window = min(rate*10, len(df) - 1)
+            start = np.random.randint(len(df) - window)
+            Animator(df.reset_index().loc[start:start + window, :], targets, save_path=(dir.path, 'preview'), rate=rate)
+
+except FileNotFoundError:
+    print(f"Cannot find points.json file (at {os.path.dirname(points_file)})")
+    print("Have you set up your environment at least once after your latest clean rebuild?"
+          "\n\tros2 run elohim init")
+
+
