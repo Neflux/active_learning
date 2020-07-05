@@ -9,6 +9,7 @@ from elohim.poisson_disc import Grid
 from geometry_msgs.msg import Quaternion
 import math
 
+
 def generate_map(seed):
     np.random.seed(seed)
 
@@ -60,7 +61,6 @@ def euler_to_quaternion(roll=0, pitch=0, yaw=0):
 
 
 def quaternion_to_euler(q):
-
     # roll x
     t0 = +2.0 * (q.w * q.x + q.y * q.z)
     t1 = +1.0 - 2.0 * (q.x * q.x + q.y * q.y)
@@ -81,12 +81,16 @@ def quaternion_to_euler(q):
 
     return X, Y, Z
 
-def binary_from_cv(cv2_img):
-    retval, buf = cv2.imencode('.JPEG', cv2_img,  [cv2.IMWRITE_JPEG_QUALITY, 50, cv2.IMWRITE_JPEG_OPTIMIZE,1])
+
+def binary_from_cv(cv2_img, jpeg_quality=90):
+    retval, buf = cv2.imencode('.JPEG', cv2_img,
+                               [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality,
+                                cv2.IMWRITE_JPEG_OPTIMIZE, 1])
     with io.BytesIO() as memfile:
         np.save(memfile, buf)
         memfile.seek(0)
         return memfile.read().decode('latin-1')
+
 
 def cv_from_binary(serialized):
     with io.BytesIO() as memfile:
@@ -94,3 +98,27 @@ def cv_from_binary(serialized):
         memfile.seek(0)
         buf = np.load(memfile)
     return cv2.imdecode(buf, flags=cv2.IMREAD_UNCHANGED)
+
+
+import pandas as pd
+
+
+class print_full():
+    def __init__(self, x=None):
+        if x is None:
+            x = []
+        self.xlen = len(x)
+
+    def __enter__(self):
+        pd.set_option('display.max_rows', self.xlen)
+        pd.set_option('display.max_columns', None)
+        pd.set_option('display.width', 2000)
+        pd.set_option('display.float_format', '{:20,.2f}'.format)
+        pd.set_option('display.max_colwidth', None)
+
+    def __exit__(self, type, value, traceback):
+        pd.reset_option('display.max_rows')
+        pd.reset_option('display.max_columns')
+        pd.reset_option('display.width')
+        pd.reset_option('display.float_format')
+        pd.reset_option('display.max_colwidth')

@@ -13,7 +13,7 @@ from nav_msgs.msg import Odometry
 
 from rclpy.node import Node
 from scipy.spatial.distance import cdist
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, Int64
 
 
 class RandomController(Node):
@@ -43,19 +43,20 @@ class RandomController(Node):
         self.stop_twist = Twist(linear=Vector3(x=0.))
 
         self.should_reset = False
-
         self.ground_truth_sub = self.create_subscription(Odometry, f'/{self.robot_name}/ground_truth/odom',
                                                          self.pose_update, qos_profile=self.qos)
+        self.signal_pub = self.create_publisher(Bool, f'/{robot_name}/virtual_sensor/signal', qos_profile=60)
 
-        self.signal_publisher = self.create_publisher(Bool, f'/{robot_name}/virtual_sensor/signal',
-                                                      qos_profile=self.raw_rate)
+        self.run_counter_pub = self.create_publisher(Int64, f'/{robot_name}/run_counter', qos_profile=60)
+        self.run_counter = 0
 
     def pose_update(self, msg):
         pos = msg.pose.pose.position
 
         euc_dist = cdist([[pos.x, pos.y]], self.targets)[0]
         signal = any(euc_dist < self.signal_threshold)
-        self.signal_publisher.publish(Bool(data=signal))
+        self.signal_pub.publish(Bool(data=signal))
+        self.run_counter_pub.publish(Int64(data=self.run_counter))
         # self.get_logger().info(f'{self.robot_name} sensor: {signal}')
 
         if any(abs(x) > self.plane_side for x in [pos.x, pos.y]):
@@ -94,6 +95,7 @@ def main(args=None):
         es = EntityState()
         es.name = random_controller.robot_name
         angles = np.linspace(0, np.pi * 2, 360 // 2)
+
         keyboard_interrupt = False
         for spawn in spawn_coords:
             for t in angles:
@@ -120,6 +122,7 @@ def main(args=None):
                     break
                 finally:
                     random_controller.stop()
+                    random_controller.run_counter += 1
             if keyboard_interrupt:
                 break
 

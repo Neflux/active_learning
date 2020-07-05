@@ -6,7 +6,7 @@ pkill -f Python
 kill -9 $(ps aux | grep gazebo | grep -v grep | awk '{ print $2 }') > /dev/null 2>&1
 
 open -b com.apple.terminal utility/launch_gazebo.sh
-#sleep 5
+sleep 2
 open -b com.apple.terminal utility/spawn_thymio.sh
 
 #ros2 launch gazebo_ros gazebo.launch.py factory:=true verbose:=true paused:=true &
