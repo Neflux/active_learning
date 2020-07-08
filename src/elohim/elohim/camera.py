@@ -15,11 +15,11 @@ def random_PIL():
     return Image.fromarray(a.astype('uint8')).convert('RGB')
 
 class Monitor(Node):
-    def __init__(self, rate=1/30.):
+    def __init__(self, camera_rate=1 / 30.):
         super().__init__('monitor_node')
-        self.rate = rate
+        self.camera_rate = camera_rate
         self.bridge = CvBridge()
-        self.create_subscription(ROSImage, '/thymioX/head_camera/image_raw', self.update,
+        self.create_subscription(ROSImage, '/thymioX/head_camera/image_raw', self.update_image,
                                  qos_profile=rclpy.qos.QoSProfile(depth=30,
                                                                   reliability=QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT))
 
@@ -28,12 +28,12 @@ class Monitor(Node):
         #cv2.waitKey(1)
 
         self.locked = True
-        self.create_timer(rate, self.unlock)
+        self.create_timer(camera_rate, self.unlock)
 
     def unlock(self):
         self.locked = False
 
-    def update(self, msg):
+    def update_image(self, msg):
         if not self.locked:
             cv2_img = self.bridge.imgmsg_to_cv2(msg, 'rgb8')
 
@@ -43,14 +43,12 @@ class Monitor(Node):
             data = Image.fromarray(cv2_img.astype('uint8'),'RGB').convert('RGB')
             self.camera_feed.set_data(data)
             plt.draw()
-            plt.pause(self.rate)
+            plt.pause(self.camera_rate)
 
             self.locked = True
 
 def main(args=None):
     rclpy.init(args=args)
-
-
 
     monitor = Monitor()
     try:

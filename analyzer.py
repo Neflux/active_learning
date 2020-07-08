@@ -292,9 +292,10 @@ try:
             # Fix timezone
             df.index = df.index.tz_localize('UTC').tz_convert('Europe/Rome')
 
-            # Select a random window of 10 sec for a preview video
-            rate = 30
-            window = min(rate*10, len(df) - 1)
+            # Select a random window of n sec for a preview video
+
+            rate, seconds = 30, 15
+            window = min(rate*seconds, len(df) - 1)
             start = np.random.randint(len(df) - window)
             Animator(df.reset_index().loc[start:start + window, :], targets, save_path=(dir.path, 'preview'), rate=rate)
 

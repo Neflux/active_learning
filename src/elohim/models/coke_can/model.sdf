@@ -35,6 +35,7 @@
               <min_depth>0.001</min_depth>
               <max_vel>0.1</max_vel>
             </ode>
+            <collide_bitmask>0x100</collide_bitmask>
           </contact>
         </surface>
       </collision>
@@ -47,5 +48,5 @@
         </geometry>
       </visual>
     </link>
-  </model>
+      </model>
 </sdf>

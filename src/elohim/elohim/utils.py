@@ -4,13 +4,14 @@ import os
 
 import cv2
 import numpy as np
+from PIL import Image
 from ament_index_python import get_package_share_directory
 from elohim.poisson_disc import Grid
 from geometry_msgs.msg import Quaternion
 import math
 
 
-def generate_map(seed):
+def generate_map(seed, density=1):
     np.random.seed(seed)
 
     spawn_area = 20
@@ -22,12 +23,13 @@ def generate_map(seed):
         np.linspace(0, spawn_area, int(2 * spawn_area / step) + 1)
     )).reshape([2, -1]).T
 
-    n_targets = len(spawn_coords) // 2
+    n_targets = int(len(spawn_coords)*density)
 
     grid = Grid(threshold, spawn_area, spawn_area)
     points = grid.poisson(seed, static=spawn_coords)
     targets = np.array(points[len(spawn_coords):]) - spawn_area / 2
     np.random.shuffle(targets)
+
     targets = targets[:n_targets]
     spawn_coords -= spawn_area / 2
 
@@ -122,3 +124,23 @@ class print_full():
         pd.reset_option('display.width')
         pd.reset_option('display.float_format')
         pd.reset_option('display.max_colwidth')
+
+
+maxcppfloat = 340282346638528859811704183484516925440
+
+def random_PIL():
+    a = np.random.rand(240, 320, 3) * 255
+    return Image.fromarray(a.astype('uint8')).convert('RGB')
+
+import matplotlib
+import matplotlib.pyplot as plt
+def mypause(interval):
+    backend = plt.rcParams['backend']
+    if backend in matplotlib.rcsetup.interactive_bk:
+        figManager = matplotlib._pylab_helpers.Gcf.get_active()
+        if figManager is not None:
+            canvas = figManager.canvas
+            if canvas.figure.stale:
+                canvas.draw()
+            canvas.start_event_loop(interval)
+            return
