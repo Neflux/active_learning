@@ -1,4 +1,8 @@
+import inspect
+import multiprocessing
+import sys
 import time
+from functools import partial
 
 from gazebo_msgs.srv._delete_entity import DeleteEntity_Response
 from gazebo_msgs.srv._get_model_list import GetModelList_Response
@@ -7,56 +11,73 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
 
+
+
 class AsyncServiceCaller:
-    def __init__(self):
+    """ Allows for multi-threaded requests on gazebo/ros listening services """
+
+    def __init__(self, cache=None):
+
+        if cache is None:
+            cache = multiprocessing.cpu_count()
+            print("Cache defaulting to", cache)
+        self.cache = cache
+        self.timeout = 1.  # any number > 0 should be good
         self.executor = MultiThreadedExecutor()
-        self.nodes = []
-        self.start = time.time()
         self.total_tasks = 0
 
-    def add_node(self, node):
-        self.executor.add_node(node)
-        self.nodes.append(node)
-        self.total_tasks += 1
-        if len(self.nodes) == 50:
-            self.spin_and_join()
+        self.reset_time = True
 
-    def spin_and_join(self):
-        if len(self.nodes) == 0:
+    def add_node(self, node):
+        """ Add node to the execution pool """
+
+        if self.reset_time:
+            self.start = time.time()
+            self.reset_time = False
+
+        node.add_done_callback(self.executor)
+        self.executor.add_node(node)
+        self.total_tasks += 1
+        if len(self.executor.get_nodes()) >= self.cache:
+            self.spin_and_join(final=False)
+
+    def spin_and_join(self, final=True):
+        """ Empties the execution pool """
+
+        if len(self.executor.get_nodes()) == 0:
             return
 
+        elapsed = (time.time() - self.start)
         try:
-            while len(self.nodes) > 0:
-                self.executor.spin_once(0.5)
-                print(f'\rLeft: {len(self.nodes)}', end='')
-                delete_these = []
-                for i, node in enumerate(self.nodes):
-                    if node.future.done():
-                        try:
-                            node.future.result()
-                        except Exception as e:
-                            node.get_logger().info(
-                                'Service call failed %r' % (e,))
-                        finally:
-                            node.destroy_node()
-                            delete_these.append(i)
-
-                for index in sorted(delete_these, reverse=True):
-                    del self.nodes[index]
+            while len(self.executor.get_nodes()) > 0:
+                self.executor.spin_once(self.timeout)
+                print(f'\rLeft: {len(self.executor.get_nodes())}/{self.total_tasks}, {elapsed:.3f}s', end='')
+        except KeyboardInterrupt:
+            print(" Stopping.")
         finally:
-            print('\r'+f'Task completed so far: {self.total_tasks} - Total elapsed time: {(time.time()-self.start):.3f}s', end='')
+            print(
+                '\r' + f'Task completed so far: {self.total_tasks} - '
+                       f'Total elapsed time: {elapsed:.3f}s - '
+                       f'Speed: {self.total_tasks / elapsed:.2f} t/s',
+                end='')
+
+            if final:
+                self.reset_time = True
+                self.total_tasks = 0
+                print()
 
     def __del__(self):
         self.executor.shutdown()
 
+
 class AsyncServiceCall(Node):
     def __init__(self, srv, srv_namespace, request_dict=None, id=''):
 
-        id = 'minimal_client_async'+id
+        id = 'minimal_client_async' + id
         super().__init__(id)
 
         self.cli = self.create_client(srv, srv_namespace)
-        while not self.cli.wait_for_service(timeout_sec=1.0):
+        while not self.cli.wait_for_service(timeout_sec=0.01):
             self.get_logger().info(f'service {srv_namespace} not available, waiting again...')
         self.req = srv.Request()
 
@@ -65,9 +86,24 @@ class AsyncServiceCall(Node):
         for key in request_dict:
             setattr(self.req, key, request_dict[key])
 
+        self.send_request()
+
+    def add_done_callback(self, executor):
+        self.executor = executor
+        self.future.add_done_callback(self.destroy)
+
+    def destroy(self, future):
+        self.executor.remove_node(self)
+        self.destroy_node()
+
     def send_request(self):
         self.future = self.cli.call_async(self.req)
 
+
+def function_that_I_want(obj):
+    mod = inspect.getmodule(obj)
+    base, _sep, _stem = mod.__name__.partition('.')
+    return sys.modules[base]
 
 class SyncServiceCaller:
 
@@ -76,10 +112,20 @@ class SyncServiceCaller:
         self.node = node
         self.destroy_node = destroy_node
 
-    def __call__(self, srv=None, srv_namespace=None, request_dict=None):
+    def __call__(self, srv=None, srv_namespace=None, request_dict=None, verbose=False):
+        char_limit = 20
+        if verbose:
+            char_limit = sys.maxsize
 
+        reqdic = ''
+        if request_dict is not None:
+            reqdic = ', '.join([f'{k}: \'{v if len(str(v)) < char_limit else "..."}\''
+                      for k,v in request_dict.items()])
+            reqdic = f'"{reqdic}"'
+
+        t = f'{function_that_I_want(srv).__name__}/srv/{srv.__name__}'
+        print(f'/{srv_namespace.ljust(20)} {t.ljust(30)} {reqdic}')
         node = AsyncServiceCall(srv=srv, srv_namespace=srv_namespace, request_dict=request_dict)
-        node.send_request()
 
         while self.rclpy.ok():
             self.rclpy.spin_once(node)
@@ -103,5 +149,5 @@ def response_interpreter(logger, res):
         logger.info(res.status_message)
     elif isinstance(res, GetModelList_Response):
         logger.info("Models: " + ", ".join(res.model_names))
-    #elif isinstance(res, SetEntityState_Response):
+    # elif isinstance(res, SetEntityState_Response):
     #    logger.info(res.success)

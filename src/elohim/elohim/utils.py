@@ -23,7 +23,7 @@ def generate_map(seed, density=1):
         np.linspace(0, spawn_area, int(2 * spawn_area / step) + 1)
     )).reshape([2, -1]).T
 
-    n_targets = int(len(spawn_coords)*density)
+    n_targets = int(len(spawn_coords) * density)
 
     grid = Grid(threshold, spawn_area, spawn_area)
     points = grid.poisson(seed, static=spawn_coords)
@@ -33,8 +33,9 @@ def generate_map(seed, density=1):
     targets = targets[:n_targets]
     spawn_coords -= spawn_area / 2
 
-    print(f"Spawn points generated: {len(spawn_coords)}, \
-            pick up targets: {n_targets}, radius: {threshold}")
+    print(f"Spawn points generated: {len(spawn_coords)}, "
+          f"Pick up targets: {n_targets}, "
+          f"Poisson disk radius: {threshold}")
 
     with open(os.path.join(get_package_share_directory('elohim'), 'points.json'), 'w') as f:
         json.dump({"targets": [{"x": x[0], "y": x[1]} for x in targets],
@@ -62,6 +63,14 @@ def euler_to_quaternion(roll=0, pitch=0, yaw=0):
     return Quaternion(x=x, y=y, z=z, w=w)
 
 
+def mktransf(pose):
+    """Returns a trasnformation matrix given a (x, y, theta) pose."""
+    cos = np.cos(pose[2])
+    sin = np.sin(pose[2])
+    return np.array([[cos, -sin, pose[0]],
+                     [sin, cos, pose[1]],
+                     [0, 0, 1]])
+
 def quaternion_to_euler(q):
     # roll x
     t0 = +2.0 * (q.w * q.x + q.y * q.z)
@@ -82,6 +91,26 @@ def quaternion_to_euler(q):
     #    return result
 
     return X, Y, Z
+
+
+def quaternion2yaw(i):
+    x, y, z, w = i
+    q = Quaternion(x=x, y=y, z=z, w=w)
+    return quaternion_to_euler(q)[2]
+
+
+ROBOT_GEOMETRY = [
+    mktransf((0.0630, 0.0493,
+              quaternion2yaw([0.0, 0.0, 0.3256, 0.9455]))),  # left
+    mktransf((0.0756, 0.0261,
+              quaternion2yaw([0.0, 0.0, 0.1650, 0.9863]))),  # center_left
+    mktransf((0.0800, 0.0000, 0.0000)),  # center
+    mktransf((0.0756, -0.0261,
+              quaternion2yaw([0.0, 0.0, -0.1650, 0.9863]))),  # center_right
+    mktransf((0.0630, -0.0493,
+              quaternion2yaw([0.0, 0.0, -0.3256, 0.9455])))  # right
+]
+
 
 
 def binary_from_cv(cv2_img, jpeg_quality=90):
@@ -128,12 +157,16 @@ class print_full():
 
 maxcppfloat = 340282346638528859811704183484516925440
 
+
 def random_PIL():
     a = np.random.rand(240, 320, 3) * 255
     return Image.fromarray(a.astype('uint8')).convert('RGB')
 
+
 import matplotlib
 import matplotlib.pyplot as plt
+
+
 def mypause(interval):
     backend = plt.rcParams['backend']
     if backend in matplotlib.rcsetup.interactive_bk:

@@ -2,6 +2,7 @@ import glob
 import json
 import logging as log
 import os
+import random
 import time
 import warnings
 from math import sin, cos, sqrt
@@ -22,12 +23,30 @@ from matplotlib.patches import Polygon, Circle
 from scipy.spatial import distance
 from tables import PerformanceWarning
 
-from utils import cv_from_binary
+try: # Prioritize local src in case of PyCharm execution, no need to rebuild with colcon
+    from utils import cv_from_binary, ROBOT_GEOMETRY, print_full
+except ImportError:
+    from elohim.utils import cv_from_binary, ROBOT_GEOMETRY
 
 d45 = np.pi / 4
 
 class Animator:
     def __init__(self, df, static_targets, side=10, rate=30, save_path=None):
+        """Given a dataframe and a list of coordinates of static targets, builds a FuncAnimation.
+            The animations shows the top down view, and the live camera feed (ax1 and ax2).
+            TODO: occupancy map ax3
+
+            The top down view also features the unprecise odometry, but displays it only when the difference from
+                ground truth is large enough (blue: ground truth, orange: displaced odometry)
+
+            Args:
+                    @param df:  the merged dataframe that contains all the necessary data (sensors and odometry)
+                    @param static_targets:  a list of sensors' readings.
+                    @param side: simulation 2D boundaries
+                    @param rate: rate of the animation
+                    @param save_path: if specified, the animation will be saved at this path instead of being shown
+            """
+
         self.rate = rate
         self.length = 10
         self.fov_segments = 40
@@ -43,6 +62,7 @@ class Animator:
         self.images = df['image'].map(cv_from_binary).map(Image.fromarray, "RGB").to_numpy()
 
         def gradient_line(cmap):
+            """ Returns a LineCollection composition that results in a single line colored with a gradient """
             gradient = np.linspace(0.0, 1.0, self.fov_segments)
             my_cmap = cmap(np.arange(cmap.N))
             my_cmap[:, -1] = np.linspace(1, 0, cmap.N)
@@ -50,6 +70,7 @@ class Animator:
             return LineCollection([], array=gradient, cmap=my_cmap, linewidth=1.2)
 
         def gradient_area(color):
+            """ Returns an AxesImage and its Polygon perimeter for the Thymio FOV """
             gradient = np.empty((100, 1, 4), dtype=float)
             rgb = mcolors.colorConverter.to_rgb(color)
             gradient[:, :, :3] = rgb
@@ -84,6 +105,7 @@ class Animator:
 
         # Thymio
         def thymio(color, fovline_cmap):
+            """ Returns a dictionary of matplotlib objects for a Thymio instance on the top-down plot """
             thymio, = ax1.plot([], [], 'o', color=color, zorder=3, ms=1.)
             sensor_radius = ax1.add_artist(Circle((0, 0), 0, fill=False, linestyle='--', alpha=0.5, linewidth=0.7))
             intent = ax1.add_line(Line2D([], [], linestyle='--', color='black', linewidth=1.0, alpha=0.8))
@@ -118,8 +140,8 @@ class Animator:
                            progress_callback=lambda i, n: print(f'\rSaving: {i * 100. / n:.2f} %', end=''))
             print(f"\rSaving process complete. File location: {save_path[0]}/{save_path[1]}.mp4")
 
-
     def init(self):
+        """ FuncAnimation init function, mandatory for the setup """
         for artist in [self.gt_artists, self.odom_artists]:
             artist['thymio'].set_data([], [])
             artist['intent'].set_data([], [])
@@ -133,6 +155,8 @@ class Animator:
         return *self.gt_artists.values(), *self.odom_artists.values(), self.camera,
 
     def animate(self, i):
+        """ FuncAnimation animate function """
+
         for artist, positional_data in zip([self.gt_artists, self.odom_artists],
                                            [self.gt_pos_data, self.odom_pos_data]):
             x, y, theta = positional_data[i]
@@ -142,7 +166,9 @@ class Animator:
 
             t = np.c_[[x, y], [x, y]].T + self.length * np.array([np.cos(theta + (d45 * np.array([-1, 1]))),
                                                                   np.sin(theta + (d45 * np.array([-1, 1])))]).T
+
             def segments(x, y, t):
+                """ Returns a list of coordinates for the LineCollection's updated position """
                 tx, ty = t
                 rx = np.linspace(x, tx, self.fov_segments)
                 ry = np.linspace(y, ty, self.fov_segments)
@@ -169,6 +195,13 @@ class Animator:
 
 
 def mergedfs(dfs, tolerance='1s'):
+    """Merges different dataframes into a single synchronized dataframe.
+        Args:
+            @param dfs: a dictionary of dataframes divided by ros topic
+            @param tolerance: Maximum time distance between original and new labels for inexact matches
+        Returns:
+            a single dataframe composed of the various dataframes synchronized.
+        """
     min_topic = None
     seen_cols = set()
     tot_with_dupes = sum([len(df) for topic, df in dfs.items()])
@@ -212,10 +245,17 @@ def mergedfs(dfs, tolerance='1s'):
     return result
 
 
-
-
-
 def reset_odom_run(df, instructions):
+    """Displaces and rotates the cumulative odometry to match the starting pose of ground truth for each run
+        Args:
+            @param df: the already merged df that contains all the synced odometry data
+            @param instructions: a dictionary that specifies the translation and rotation labels in the df
+                'translation' contains a list of tuples in the format ('reference ground truth','offset odometry')
+                'rotation' contains a single tuple in the same format for the yaw angle
+            TODO: a boolean param to have it start at 0,0 instead of ground truth start pose? useful?
+        Returns:
+            a single dataframe with the odometry aligned to ground truth odometry on each run
+        """
     assert (isinstance(instructions, dict))
     assert ({'translation', 'rotation'} <= set(instructions))
 
@@ -255,53 +295,103 @@ def reset_odom_run(df, instructions):
     return df
 
 
-points_file = os.path.join(get_package_share_directory('elohim'), 'points.json')
-try:
-    with open(points_file) as f:
-        points = json.load(f)
-    targets = np.array([[t["x"], t["y"]] for t in points["targets"]])
 
-    for dir in list(os.scandir('history')):
-        fp_files = glob.glob(f'{dir.path}/*.h5')
-        files = [os.path.basename(x) for x in fp_files]
-
-        if len(files) == 5 and 'summary.hdf5' not in files:
-
-            last_snapshot = None
-            while last_snapshot is None:
-                try:
-                    with warnings.catch_warnings():
-                        warnings.filterwarnings("ignore", category=PerformanceWarning)
-                        last_snapshot = {f: pd.read_hdf(f) for f in fp_files}
-                except Exception as ex:
-                    print("Recorder is probably locking the file, trying again in 3 second")
-                    time.sleep(3)
-
-            # print(dir.path)
-            df = mergedfs(last_snapshot)
-
-            # Remove meaningless runs
-            df = df[df['run'].map(df['run'].value_counts()) > 10]
-
-            # Reset odometry at the start of each run
-            instructions = {'translation': [('ground_truth_odom_x', 'x'),
-                                            ('ground_truth_odom_y', 'y')],
-                            'rotation': ('ground_truth_odom_theta', 'theta')}
-            df = reset_odom_run(df, instructions)
-
-            # Fix timezone
-            df.index = df.index.tz_localize('UTC').tz_convert('Europe/Rome')
-
-            # Select a random window of n sec for a preview video
-
-            rate, seconds = 30, 15
-            window = min(rate*seconds, len(df) - 1)
-            start = np.random.randint(len(df) - window)
-            Animator(df.reset_index().loc[start:start + window, :], targets, save_path=(dir.path, 'preview'), rate=rate)
-
-except FileNotFoundError:
-    print(f"Cannot find points.json file (at {os.path.dirname(points_file)})")
-    print("Have you set up your environment at least once after your latest clean rebuild?"
-          "\n\tros2 run elohim init")
+def get_map(rel_transform, sensor_readings, robot_geometry, coords, delta):
+    '''Given a pose, constructs the occupancy map w.r.t. that pose.
+    An occupancy map has 3 possible values:
+    1 = object present;
+    0 = object not present;
+    -1 = unknown;
+    Args:
+            rel_transform:  the tranformation matrix from which to compute the occupancy map.
+            sensor_readings:  a list of sensors' readings.
+            robot_geometry: the transformations from robot frame to sensors' frames.
+            coords: a list of relative coordinates of the form [(x1, y1), ...].
+            delta: the maximum distance between a sensor reading and a coord to be matched.
+    Returns:
+            an occupancy map generated from the relative pose using coords and sensors' readings.
+    '''
+    # locate objects based on the distances read by the sensors
+    sensor_readings_homo = np.array([[r, 0., 1.] for r in sensor_readings])
+    # batch matrix multiplication
+    rel_object_poses = np.einsum('ijk,ik->ij',
+                                 np.matmul(rel_transform,
+                                           robot_geometry),
+                                 sensor_readings_homo)[:, :-1]
+    # initialize occupancy map to -1
+    occupancy_map = np.full((coords.shape[0],), -1, dtype=np.float)
+    # compute distances between object poses and coords
+    distances = np.linalg.norm(
+        coords[:, None, :] - rel_object_poses[None, :, :],
+        axis=-1)
+    # find all coords with distance <= delta
+    closer_than_delta = distances <= delta
+    icoords, isens = np.where(closer_than_delta)
+    # note: 0.11 is the maximum distance of a detected obstacle
+    occupancy_map[icoords] = sensor_readings[isens] < 0.11
+    return occupancy_map
 
 
+def my_map(df):
+    print(df.info())
+    df['sensor'] = df['sensor'].astype(int)
+    print(df.groupby('run').sum()['sensor'])
+
+
+def main(args=None):
+    points_file = os.path.join(get_package_share_directory('elohim'), 'points.json')
+    try:
+        with open(points_file) as f:
+            points = json.load(f)
+        targets = np.array([[t["x"], t["y"]] for t in points["targets"]])
+
+        for dir in list(os.scandir('history')):
+            fp_files = glob.glob(f'{dir.path}/*.h5')
+            files = [os.path.basename(x) for x in fp_files]
+
+            if len(files) == 5 and 'summary.hdf5' not in files:
+
+                last_snapshot = None
+                while last_snapshot is None:
+                    try:
+                        with warnings.catch_warnings():
+                            warnings.filterwarnings("ignore", category=PerformanceWarning)
+                            last_snapshot = {f: pd.read_hdf(f) for f in fp_files}
+                    except Exception as ex:
+                        print("Recorder is probably locking the file, trying again in 3 second")
+                        time.sleep(3)
+
+                # print(dir.path)
+                df = mergedfs(last_snapshot)
+
+                # Remove meaningless runs
+                df = df[df['run'].map(df['run'].value_counts()) > 10]
+
+                # Reset odometry at the start of each run
+                instructions = {'translation': [('ground_truth_odom_x', 'x'),
+                                                ('ground_truth_odom_y', 'y')],
+                                'rotation': ('ground_truth_odom_theta', 'theta')}
+                df = reset_odom_run(df, instructions)
+
+                # Fix timezone
+                df.index = df.index.tz_localize('UTC').tz_convert('Europe/Rome')
+
+                # Select a random window of n sec for a preview video
+                #if not os.path.exists(f'{dir.path}/preview.mp4'):
+                if False:
+                    rate, seconds = 60, 350
+                    window = min(rate * seconds, len(df) - 1)
+                    start = np.random.randint(len(df) - window)
+                    Animator(df.reset_index().loc[start:start + window, :], targets,
+                             save_path=(dir.path, 'preview'), rate=rate)
+
+                my_map(df)
+
+    except FileNotFoundError:
+        print(f"Cannot find points.json file (at {os.path.dirname(points_file)})")
+        print("Have you set up your environment at least once after your latest clean rebuild?"
+              "\n\tros2 run elohim init")
+
+
+if __name__ == '__main__':
+    main()

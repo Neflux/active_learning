@@ -1,14 +1,12 @@
-import cv2
+import matplotlib.pyplot as plt
+import numpy as np
 import rclpy
+from PIL import Image as Image
+from cv_bridge import CvBridge
 from rclpy.node import Node
 from rclpy.qos import QoSReliabilityPolicy
 from sensor_msgs.msg import Image as ROSImage
-from cv_bridge import CvBridge
-from PIL import Image as Image
-import matplotlib.pyplot as plt
-import numpy as np
 
-import pyqtgraph as pg
 
 def random_PIL():
     a = np.random.rand(240, 320, 3) * 255
