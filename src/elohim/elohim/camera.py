@@ -1,3 +1,5 @@
+import time
+
 import matplotlib.pyplot as plt
 import numpy as np
 import rclpy
@@ -13,20 +15,36 @@ def random_PIL():
     return Image.fromarray(a.astype('uint8')).convert('RGB')
 
 class Monitor(Node):
-    def __init__(self, camera_rate=1 / 30.):
+    def __init__(self, camera_rate=60):
         super().__init__('monitor_node')
         self.camera_rate = camera_rate
+        self.camera_period = 1./camera_rate
         self.bridge = CvBridge()
         self.create_subscription(ROSImage, '/thymioX/head_camera/image_raw', self.update_image,
-                                 qos_profile=rclpy.qos.QoSProfile(depth=30,
+                                 qos_profile=rclpy.qos.QoSProfile(depth=60,
                                                                   reliability=QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT))
 
         self.camera_feed = plt.imshow(random_PIL())
-        #cv2.imshow("window", np.random.randint(255, size=(240,320,3),dtype=np.uint8))
-        #cv2.waitKey(1)
+        plt.axis('off')  # this rows the rectangular frame
+        plt.gca().get_xaxis().set_visible(False)  # this removes the ticks and numbers for x axis
+        plt.gca().get_yaxis().set_visible(False)
+        plt.tight_layout(pad=0.)
+        self.fps = plt.annotate('', xy=(2.,8.), color='green', weight='bold')
+
+        plt.gcf().canvas.mpl_connect('close_event', self.close)
 
         self.locked = True
-        self.create_timer(camera_rate, self.unlock)
+        self.timer = self.create_timer(self.camera_period , self.unlock)
+
+        self.start_time = time.time()
+        self.x = 0.3  # displays the frame rate every 1 second
+        self.counter = 0
+
+    def close(self, evt):
+        self.locked = True
+        self.timer.cancel()
+        self.timer.destroy()
+        exit()
 
     def unlock(self):
         self.locked = False
@@ -34,14 +52,17 @@ class Monitor(Node):
     def update_image(self, msg):
         if not self.locked:
             cv2_img = self.bridge.imgmsg_to_cv2(msg, 'rgb8')
-
-            #cv2.imshow("window", cv2_img)
-            #cv2.waitKey(1)
-
             data = Image.fromarray(cv2_img.astype('uint8'),'RGB').convert('RGB')
             self.camera_feed.set_data(data)
+
+            self.counter += 1
+            if (time.time() - self.start_time) > self.x:
+                self.fps.set_text(f'FPS: {self.counter / (time.time() - self.start_time):.0f}')
+                self.counter = 0
+                self.start_time = time.time()
+
             plt.draw()
-            plt.pause(self.camera_rate)
+            plt.pause(self.camera_period)
 
             self.locked = True
 

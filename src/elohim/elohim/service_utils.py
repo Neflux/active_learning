@@ -124,7 +124,8 @@ class SyncServiceCaller:
             reqdic = f'"{reqdic}"'
 
         t = f'{function_that_I_want(srv).__name__}/srv/{srv.__name__}'
-        print(f'/{srv_namespace.ljust(20)} {t.ljust(30)} {reqdic}')
+        if verbose:
+            print(f'/{srv_namespace.ljust(20)} {t.ljust(30)} {reqdic}')
         node = AsyncServiceCall(srv=srv, srv_namespace=srv_namespace, request_dict=request_dict)
 
         while self.rclpy.ok():

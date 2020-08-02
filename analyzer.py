@@ -333,9 +333,8 @@ def get_map(rel_transform, sensor_readings, robot_geometry, coords, delta):
 
 
 def my_map(df):
-    print(df.info())
-    df['sensor'] = df['sensor'].astype(int)
-    print(df.groupby('run').sum()['sensor'])
+    active_sensor_ratio = len(df[df['sensor']])/len(df)
+    print(f'Iterations with active virtual sensor: {active_sensor_ratio*100.:.1f}%')
 
 
 def main(args=None):
@@ -349,15 +348,20 @@ def main(args=None):
             fp_files = glob.glob(f'{dir.path}/*.h5')
             files = [os.path.basename(x) for x in fp_files]
 
-            if len(files) == 5 and 'summary.hdf5' not in files:
+            if len(files) >= 4 and 'summary.hdf5' not in files:
 
-                last_snapshot = None
-                while last_snapshot is None:
+                last_snapshot = {}
+                while len(last_snapshot) == 0:
                     try:
                         with warnings.catch_warnings():
                             warnings.filterwarnings("ignore", category=PerformanceWarning)
-                            last_snapshot = {f: pd.read_hdf(f) for f in fp_files}
-                    except Exception as ex:
+                            last_snapshot = {}
+                            for ff in fp_files:
+                                last_snapshot[ff] = pd.read_hdf(ff)
+                    except ValueError:
+                        print(f'No dataset in HDF5 file: {ff}')
+                        exit()
+                    except Exception:
                         print("Recorder is probably locking the file, trying again in 3 second")
                         time.sleep(3)
 
@@ -377,13 +381,12 @@ def main(args=None):
                 df.index = df.index.tz_localize('UTC').tz_convert('Europe/Rome')
 
                 # Select a random window of n sec for a preview video
-                #if not os.path.exists(f'{dir.path}/preview.mp4'):
-                if False:
-                    rate, seconds = 60, 350
-                    window = min(rate * seconds, len(df) - 1)
-                    start = np.random.randint(len(df) - window)
-                    Animator(df.reset_index().loc[start:start + window, :], targets,
-                             save_path=(dir.path, 'preview'), rate=rate)
+                # if not os.path.exists(f'{dir.path}/preview.mp4'):
+                #     rate, seconds = 60, 350
+                #     window = min(rate * seconds, len(df) - 1)
+                #     start = np.random.randint(len(df) - window)
+                #     Animator(df.reset_index().loc[start:start + window, :], targets,
+                #              save_path=(dir.path, 'preview'), rate=rate)
 
                 my_map(df)
 

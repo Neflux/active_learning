@@ -11,11 +11,10 @@ from geometry_msgs.msg import Quaternion
 import math
 
 
-def generate_map(seed, density=1):
+def generate_map(seed, density=1, threshold=1):
     np.random.seed(seed)
 
     spawn_area = 20
-    threshold = 1
     step = 5
 
     spawn_coords = np.stack(np.meshgrid(

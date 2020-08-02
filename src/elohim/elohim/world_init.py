@@ -51,7 +51,7 @@ def main(args=None):
     xml_sdf = get_resource(target, root=os.path.join(get_package_share_directory('elohim'), 'models'))
 
     np.random.seed(0xDEADBEEF)
-    _, targets = generate_map(0xDEADBEEF, density=1.5)
+    _, targets = generate_map(0xDEADBEEF, density=3, threshold=0.7)
     for i, (x, y) in enumerate(targets):
         id = f"{target}{i}"
         theta = np.random.uniform(0, np.pi * 2)

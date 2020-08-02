@@ -18,6 +18,7 @@ from geometry_msgs.msg import Twist, Pose, Vector3, Point
 from matplotlib.widgets import Button
 from nav_msgs.msg import Odometry
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.duration import Duration
 from rclpy.logging import LoggingSeverity
 from rclpy.node import Node
 from sensor_msgs.msg import Image as ROSImage
@@ -32,19 +33,24 @@ except ImportError:
     from elohim.utils import euler_to_quaternion, random_PIL, maxcppfloat, mypause
 
 
+class IllegalPosition(Exception):
+    def __init__(self, message):
+        self.message = message
+        super().__init__(self.message)
+
+
 # asdasd noinspection PyUnresolvedReferences
 class RandomController(Node):
     STOP_TWIST = Twist(linear=Vector3(x=0.))
-    MAX_SPEED = 0.15
+    TURN_RIGHT = Twist(angular=Vector3(z=-1.))
+    TURN_LEFT = Twist(angular=Vector3(z=-1.))
+    GO_TWIST = Twist(linear=Vector3(x=0.15))
     SENSORS = ['left', 'center_left', 'center', 'center_right', 'right']
 
     def __init__(self, targets: np.ndarray,
                  plane_side: float = 10.1,
                  thymio_name: str = "thymioX",
-                 rate: int = 10,
-                 use_odometry: bool = False,
-                 show_camera_feed: bool = False,
-                 camera_rate: int = 30) -> None:
+                 rate: int = 10) -> None:
 
         super().__init__('random_controller')
         self.get_logger().set_level(LoggingSeverity.INFO)
@@ -53,10 +59,11 @@ class RandomController(Node):
         self.plane_side = plane_side
         self.robot_name = thymio_name
         self.raw_rate = rate
-        self.go_twist = Twist(linear=Vector3(x=self.MAX_SPEED))
         self.run_counter = 0
-        self.pending_reset = False
-        self.debug_radar = {k: np.inf for k in self.SENSORS}
+        self.ref_time = None
+        self.state = 'idle'
+
+        # self.debug_radar = {k: np.inf for k in self.SENSORS}
 
         best_effort = rclpy.qos.QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT
         self.qos = rclpy.qos.QoSProfile(depth=self.raw_rate, reliability=best_effort)
@@ -68,59 +75,10 @@ class RandomController(Node):
         self.run_counter_pub = self.create_publisher(Int64, f'/{thymio_name}/run_counter', qos_profile=60)
 
         self.sensor_subs, self.odom_sub = [], None
-        self.subscribe()
-
-        # Camera feed, 'mypause' trick disables AlwaysOnTop behaviour
-
-        if show_camera_feed:
-            self.get_logger().log("Consider slowing down Thymio or using a separate node for displaying the camera"
-                                  " feed.\nOtherwise the collision checks will be too delayed and it will crush", INFO)
-            self.camera_period = 1. / camera_rate
-            self.bridge = CvBridge()
-            self.last_Image = ROSImage(data=np.random.randint(0, 256, 240 * 320 * 3).tolist(),
-                                       height=240, width=320, encoding="rgb8", is_bigendian=0, step=960)
-            camera_group = MutuallyExclusiveCallbackGroup()
-            self.create_subscription(ROSImage, f'/{thymio_name}/head_camera/image_raw', self.save_image,
-                                     qos_profile=rclpy.qos.QoSProfile(depth=30, reliability=best_effort),
-                                     callback_group=camera_group)
-            self.camera_feed = plt.imshow(random_PIL())
-            self.create_timer(self.camera_period, self.update_image, callback_group=camera_group)
-            axnext = plt.axes([0.81, 0.05, 0.1, 0.075])
-            bnext = Button(axnext, 'Skip Run')
-            bnext.on_clicked(self.set_pending_reset)
-            axnext._button = bnext
-            plt.gca().set_axis_off()
-            plt.subplots_adjust(top=1, bottom=0, right=1, left=0, hspace=0, wspace=0)
-            plt.margins(0, 0)
-            plt.gca().xaxis.set_major_locator(plt.NullLocator())
-            plt.gca().yaxis.set_major_locator(plt.NullLocator())
-            plt.axis('off')
-            plt.show(block=False)
-
-    def go(self):
-        self.run_counter_pub.publish(Int64(data=self.run_counter))
-        self.twist_publisher.publish(self.go_twist)
-
-    def stop(self):
-        self.twist_publisher.publish(self.STOP_TWIST)
-        self.get_logger().info(f'{self.robot_name}: stopped')
-
-    def set_pending_reset(self):
-        self.stop()
-        self.unsubscribe()
-        self.pending_reset = True
-
-    def new_run(self):
-        self.subscribe()
-        self.pending_reset = False
-        self.run_counter += 1
-        self.go_twist = Twist(linear=Vector3(x=self.MAX_SPEED))
-        self.debug_radar = {k: np.inf for k in self.SENSORS}
+        self.get_logger().debug("Subscribing (sensor and odometry)")
 
     def subscribe(self):
-        self.get_logger().log("Subscribing (sensor and odometry)", LoggingSeverity.DEBUG)
-
-        # TODO: asssuming access to self.debug_radar is thread safe, None could make the detection faster
+        """ Subscribes to sensors' topics and ground truth odometry to check for out of maps """
         sensor_group = None  # MutuallyExclusiveCallbackGroup()
         for sensor in self.SENSORS:
             self.sensor_subs.append(self.create_subscription(Range, f'/{self.robot_name}/proximity/{sensor}',
@@ -130,6 +88,7 @@ class RandomController(Node):
                                                  self.qos)
 
     def unsubscribe(self):
+        """ Unsubscribes from all topics """
         self.get_logger().log("Unsubscribing (sensor and odometry)", LoggingSeverity.DEBUG)
         for sub in self.sensor_subs:
             self.destroy_subscription(sub)
@@ -138,68 +97,146 @@ class RandomController(Node):
         self.destroy_subscription(self.odom_sub)
         del self.odom_sub
 
-    def update_image(self):
-        cv2_img = self.bridge.imgmsg_to_cv2(self.last_Image, 'rgb8')
-        data = Image.fromarray(cv2_img.astype('uint8'), 'RGB').convert('RGB')
-        self.camera_feed.set_data(data)
-        mypause(self.camera_period)
+    def go(self):
+        """ Updates internal state and sets Thymio velocity to cruising speed on its forward axis (x) """
+        self.update_state('running')
+        self.twist_publisher.publish(self.GO_TWIST)
 
-    def save_image(self, msg):
-        self.last_Image = msg
+    def stop(self, reset=False):
+        """ Updates internal state and sets Thymio velocity to cruising speed on its forward axis (x)
+        @param reset: flag to differentiate obstacle-to-scan (stopped) and out-of-map/obs.scanned scenario (reset)
+            """
+        self.update_state('reset' if reset else 'stopped')
+        if reset:
+            self.unsubscribe()
+        self.twist_publisher.publish(self.STOP_TWIST)
+
+    def rotate(self, rotation):
+        """
+            Updates internal state and sets Thymio twist to the specified rotation value
+        @param rotation: the yaw (z-axis) rotation speed in radians per second
+        """
+        self.update_state('rotating')
+        # self.twist_publisher.publish(self.TURN_LEFT if rotation > 0 else self.TURN_RIGHT)
+        self.twist_publisher.publish(Twist(angular=Vector3(z=rotation)))
+
+    def update_state(self, state):
+        """ Updates internal state with specified str """
+        self.state = state
+
+    def broadcast_run_id(self, id='auto'):
+        """ Broadcasts the unique id of the run,  """
+        self.run_counter_pub.publish(Int64(data=(self.run_counter if id == 'auto' else id)))
+
+    def time_elapsed(self, seconds):
+        """ Starts a simple home-made timer and checks whether it elapsed or not """
+        if self.ref_time is None:
+            self.ref_time = self.get_clock().now()
+        diff = self.get_clock().now() - self.ref_time
+        remaining = seconds - diff.nanoseconds * 1e-9
+        #print(f'\r timer {remaining if remaining > 0 else 0:.2f}s', end='')
+        result = remaining < 0
+        if result:
+            self.ref_time = None
+            #print()
+            return True
+        return False
+
+    def reset(self, msg, reset=False):
+        """ Unsubscribes from all topics to prevent false flags """
+        self.stop(reset)
+        self.verbose = msg
+
+    def new_run(self):
+        self.update_state('ready')
+        self.subscribe()
+        self.run_counter += 1
+        # self.debug_radar = {k: np.inf for k in self.SENSORS}
 
     def sensor_callback(self, key, msg):
         r = msg.range if msg.range != maxcppfloat else np.inf
         signal = False
         if 0.01 < r:
-            #self.debug_radar[key] = r
-            #print(' '.join([f'{v:.2f}' for v in self.debug_radar.values()]))
+            # self.debug_radar[key] = r
+            # print(' '.join([f'{v:.2f}' for v in self.debug_radar.values()]))
             if r < 0.10:
                 signal = True
 
-            # TODO: Thymio has to go waaay slower for this to work. Any way to speed up the SIM?
             if r < 0.03:
-                self.set_pending_reset()
-                self.get_logger().info(f'{key}: too close to an object ({r:.6f})')
+                self.reset(f'{key} sensor, close object ({r:.6f})')
 
         self.signal_pub.publish(Bool(data=signal))
 
     def pose_callback(self, msg):
         pos = msg.pose.pose.position
-        #print(f'{pos.x:.2f} {pos.y:.2f}')
+        # print(f'{pos.x:.2f} {pos.y:.2f}')
         if abs(pos.x) > self.plane_side or abs(pos.y) > self.plane_side:
-            self.set_pending_reset()
-            self.get_logger().info(f'{self.robot_name} should reset: outside of map ({pos.x:.2f},{pos.y:.2f}) ')
+            self.reset(f'{self.robot_name} out of map ({pos.x:.2f},{pos.y:.2f})', reset=True)
 
 
 def run(node, service_caller, x, y, t):
+    """
+    Sets up the thymio for a new run and adds some logic for the obstacle scan
+
+    @param node: the thymio controller node
+    @param service_caller: SyncServiceCaller entity
+    @param x: x coordinate of spawn position
+    @param y: y coordinate of spawn position
+    @param t: theta angle (yaw) of spawn position
+    @return: True if the run completed successfully (obstacle or out of map), False if the user keyboard-interrupted
+    """
 
     es = EntityState(name=node.robot_name)
     es.pose = Pose(position=Point(x=x, y=y), orientation=euler_to_quaternion(yaw=t))
     service_caller(srv=SetEntityState, srv_namespace="ros_state/set_entity_state", request_dict={"state": es})
-    print(f"Spawning thymio in (x:{x:.2f}, y:{y:.2f}, t:{t:.2f})")
-    time.sleep(1)
+    print(f"[Run {str(node.run_counter).rjust(2)}]: Thymio teleported to (x:{x:.2f}, y:{y:.2f}, t:{t:.2f})")
+
     node.new_run()
-
-    node.get_logger().info(f'{node.robot_name}: to infinity and beyond')
+    start = time.time()
     try:
-        while rclpy.ok():
-            node.go()
-            rclpy.spin_once(node)
+        rotations = [1., -1., 1., -0.5]
 
-            if node.pending_reset:
-                break
+        # idle -> ready -> running -> stopped -> ready -> ..
+
+        while rclpy.ok():
+            id = 'auto'
+
+            state = node.state
+            if state == 'ready':
+                node.go()
+            elif state == 'stopped':
+                if node.time_elapsed(seconds=0.1):
+                    node.rotate(rotations.pop())
+            elif state == 'rotating':
+                if node.time_elapsed(seconds=3):
+                    if len(rotations):
+                        node.rotate(rotations.pop())
+                    else:
+                        node.stop(reset=True)
+            elif state == 'reset':
+                id = -1
+                if node.time_elapsed(1):
+                    print(f'{node.verbose} - Time: {time.time() - start:.2f}s')
+                    break
+
+            node.broadcast_run_id(id=id)
+            rclpy.spin_once(node, timeout_sec=0.)
+
     except KeyboardInterrupt:
         node.stop()
         print(" Stopping thymio and signal broadcasting")
         return False
     return True
 
-parser = argparse.ArgumentParser(description='Process some integers.',prefix_chars='@')
+
+parser = argparse.ArgumentParser(description='Process some integers.', prefix_chars='@')
 parser.add_argument('@@s', nargs=3, help="x,y,t", type=float, default=None)
-#test = ['-s', '7.50', '-7.50', '5.37']
+
 
 def main(args=None):
     rclpy.init(args=args)
+
+    # args = ['@@s', '7.50', '-7.50', '4.10']
     args = parser.parse_args(args)
 
     points_file = os.path.join(get_package_share_directory('elohim'), 'points.json')
@@ -221,6 +258,7 @@ def main(args=None):
     spawn_poses = np.array(list(itertools.product(spawn_coords, angles)))
     ids = np.arange(len(spawn_poses))
     np.random.shuffle(ids)
+    spawn_poses = spawn_poses[ids]
 
     asc = SyncServiceCaller(rclpy)
     random_controller = RandomController(targets=targets)
@@ -229,13 +267,13 @@ def main(args=None):
     if args.s is not None:
         r(*args.s)
     else:
-        for i, ((x, y), t) in enumerate(spawn_poses[ids]):
-            print(f'[{str(ids[i]).rjust(5)}] ', end='')
+        for (x, y), t in spawn_poses:
             if not r(x, y, t):
                 break
 
     random_controller.destroy_node()
     rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
