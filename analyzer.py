@@ -1,8 +1,10 @@
 import glob
+import itertools
 import json
 import logging as log
 import os
 import random
+import subprocess
 import time
 import warnings
 from math import sin, cos, sqrt
@@ -21,17 +23,24 @@ from matplotlib.colors import ListedColormap
 from matplotlib.lines import Line2D
 from matplotlib.patches import Polygon, Circle
 from scipy.spatial import distance
+from scipy.stats import stats
 from tables import PerformanceWarning
 
-try: # Prioritize local src in case of PyCharm execution, no need to rebuild with colcon
-    from utils import cv_from_binary, ROBOT_GEOMETRY, print_full
+try:  # Prioritize local src in case of PyCharm execution, no need to rebuild with colcon
+    from utils import cv_from_binary, ROBOT_GEOMETRY_SIMPLE, print_full, mktransf, COORDS
+    import config
 except ImportError:
-    from elohim.utils import cv_from_binary, ROBOT_GEOMETRY
+    from elohim.utils import cv_from_binary, ROBOT_GEOMETRY_SIMPLE, print_full, mktransf, COORDS
+    import elohim.config as config
 
 d45 = np.pi / 4
 
+
 class Animator:
-    def __init__(self, df, static_targets, side=10, rate=30, save_path=None):
+    OCC_MAP_SQUARES = list(itertools.product(range(config.occupancy_map_shape[0]),
+                                             range(config.occupancy_map_shape[0])))
+
+    def __init__(self, df, static_targets, rate=30, save_path=None, frames=None):
         """Given a dataframe and a list of coordinates of static targets, builds a FuncAnimation.
             The animations shows the top down view, and the live camera feed (ax1 and ax2).
             TODO: occupancy map ax3
@@ -42,17 +51,16 @@ class Animator:
             Args:
                     @param df:  the merged dataframe that contains all the necessary data (sensors and odometry)
                     @param static_targets:  a list of sensors' readings.
-                    @param side: simulation 2D boundaries
                     @param rate: rate of the animation
                     @param save_path: if specified, the animation will be saved at this path instead of being shown
             """
 
         self.rate = rate
-        self.length = 10
-        self.fov_segments = 40
 
         Writer = animation.writers['ffmpeg']
         writer = Writer(fps=rate, metadata=dict(artist='Me'), bitrate=1800)
+        if frames is None:
+            frames = len(df)
 
         # Cache
 
@@ -61,6 +69,26 @@ class Animator:
         self.gt_pos_data = df[['ground_truth_odom_x', 'ground_truth_odom_y', 'ground_truth_odom_theta']].to_numpy()
         self.images = df['image'].map(cv_from_binary).map(Image.fromarray, "RGB").to_numpy()
 
+        self.run_counter = df['run'].to_numpy()
+        rd = df.groupby('run')['x'].count().astype(int)
+        rd = pd.DataFrame({'len': rd, 'end': rd.cumsum().astype(int)})
+        self.run_dict = rd.to_dict()
+
+        self.omaps = [x.reshape(20,20) if isinstance(x, np.ndarray) else x for x in df['occupancy_map']]
+        self.colored_omaps = []
+        for x in self.omaps:
+            if type(x) is np.ndarray:
+                x = x.reshape(20,20)
+                res = np.empty((20, 20, 3))
+                res[x == -1] = (190, 190, 190)
+                res[x == 0] = (0, 255, 0)
+                res[x == 1] = (255, 0, 0)
+                self.colored_omaps.append(res)
+            else:
+                self.colored_omaps.append(np.full((20, 20, 3), 0))
+
+        self.fov_segments = 40
+
         def gradient_line(cmap):
             """ Returns a LineCollection composition that results in a single line colored with a gradient """
             gradient = np.linspace(0.0, 1.0, self.fov_segments)
@@ -68,6 +96,8 @@ class Animator:
             my_cmap[:, -1] = np.linspace(1, 0, cmap.N)
             my_cmap = ListedColormap(my_cmap)
             return LineCollection([], array=gradient, cmap=my_cmap, linewidth=1.2)
+
+        self.length = 10
 
         def gradient_area(color):
             """ Returns an AxesImage and its Polygon perimeter for the Thymio FOV """
@@ -82,15 +112,19 @@ class Animator:
             clip_path = Polygon(np.empty((3, 2)), fill=False, alpha=0)
             return fov_area, clip_path
 
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5), dpi=120)  # type:figure.Figure, (axes.Axes, axes.Axes)
+        from matplotlib import rc
+        # rc('font',**{'family':'sans-serif','sans-serif':['Helvetica']})
+        rc('font', **{'family': 'serif', 'serif': ['Sathu']})  # Hiragino Maru Gothic Pro
+        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(12, 5),
+                                            dpi=120)  # type:figure.Figure, (axes.Axes, axes.Axes, axes.Axes)
         self.ax1 = ax1
 
         """ Subplot 1 - Top View """
-
-        bounds = [-side - 1, side + 1]
+        half_side = config.plane_side // 2
+        bounds = [-half_side - 1, half_side + 1]
         ax1.set(title="Top view", xlim=bounds, ylim=bounds, autoscale_on=False, adjustable='box')
-        major_ticks = np.arange(-10, 11, 5)
-        minor_ticks = np.arange(-10, 11, 2.5)
+        major_ticks = np.arange(-half_side, half_side + 1, 5)
+        minor_ticks = np.arange(-half_side, half_side + 1, 2.5)
         ax1.set_xticks(major_ticks)
         ax1.set_xticks(minor_ticks, minor=True)
         ax1.set_yticks(major_ticks)
@@ -100,10 +134,10 @@ class Animator:
         ax1.grid(which='major', alpha=0.5)
 
         # Boundaries
-        b = side + 0.1
+        b = half_side + 0.1
         ax1.plot([-b, b, b, -b, -b], [-b, -b, b, b, -b], color='red', linewidth=1.2)
 
-        # Thymio
+        # Thymio objects
         def thymio(color, fovline_cmap):
             """ Returns a dictionary of matplotlib objects for a Thymio instance on the top-down plot """
             thymio, = ax1.plot([], [], 'o', color=color, zorder=3, ms=1.)
@@ -127,18 +161,30 @@ class Animator:
         ax2.set_title("Camera view")
         ax2.axis('off')
         self.camera = ax2.imshow(self.images[0])
+        self.run_indicator = ax2.text(0.5, -0.2, '', ha="center", va="center", color='black', transform=ax2.transAxes,
+                                      fontdict={'family': 'serif', 'size': 10})
+
+        """ Subplot 3 - Occupancy Map """
+
+        ax3.set_title('Occupancy map')
+        ax3.axis('off')
+        self.occ_map = ax3.imshow(self.colored_omaps[0])
+        self.labels = []
+        for i, j in self.OCC_MAP_SQUARES:
+            self.labels.append(ax3.text(j, i, '', ha="center", va="center", color="w",
+                                        fontdict={'family': 'serif', 'weight': 'bold', 'size': 8}))
 
         self.ax1.set_aspect('equal')
         fig.canvas.set_window_title("Simulation")
-        self.anim = FuncAnimation(fig, self.animate, frames=len(df), interval=1000. / rate, blit=True,
+        self.anim = FuncAnimation(fig, self.animate, frames=frames, interval=1000. / rate, blit=True,
                                   init_func=self.init, repeat=True)
 
         if save_path is None:
             plt.show()
         else:
-            self.anim.save(f"{save_path[0]}/{save_path[1]}.mp4", writer=writer,
+            self.anim.save(save_path, writer=writer,
                            progress_callback=lambda i, n: print(f'\rSaving: {i * 100. / n:.2f} %', end=''))
-            print(f"\rSaving process complete. File location: {save_path[0]}/{save_path[1]}.mp4")
+            print(f"\rSaving process complete. File location: {save_path}")
 
     def init(self):
         """ FuncAnimation init function, mandatory for the setup """
@@ -151,8 +197,15 @@ class Animator:
             artist['clip_path'].set_xy(np.empty((3, 2)))
 
         self.camera.set_data(self.images[0])
+        self.occ_map.set_data(np.random.choice([0, 128, 255], size=config.occupancy_map_shape))
 
-        return *self.gt_artists.values(), *self.odom_artists.values(), self.camera,
+        self.occ_map.set_data(self.colored_omaps[0])
+        # for i, j in self.OCC_MAP_SQUARES:
+        #    self.labels[i * config.occupancy_map_shape[0] + j].set_text('')
+
+        return *self.gt_artists.values(), *self.odom_artists.values(), \
+               self.camera, self.run_indicator, \
+               self.occ_map, *self.labels,
 
     def animate(self, i):
         """ FuncAnimation animate function """
@@ -186,12 +239,31 @@ class Animator:
         d = np.cbrt(distance.euclidean(self.gt_pos_data[i], self.odom_pos_data[i]))
         for name, obj in self.odom_artists.items():
             if name not in ['sensor_radius', 'clip_path']:
-                obj.set_alpha(d)
+                obj.set_alpha(min(1, max(0, d)))
 
         img = self.images[i]
         self.camera.set_data(img)
+        run = self.run_counter[i]
+        end = self.run_dict['end'][run]
+        length = self.run_dict['len'][run]
+        self.run_indicator.set_text(f"run {str(run).rjust(2)}: {str(length + i - end).rjust(4)}/{length} "
+                                    f"({str(i).rjust(4)}/{len(self.images)})")
 
-        return *self.gt_artists.values(), *self.odom_artists.values(), self.camera,
+        if type(self.omaps[i]) is np.ndarray:
+            for k, j in self.OCC_MAP_SQUARES:
+                cell = f'{self.omaps[i][k, j]:.0f}'
+                self.labels[k * config.occupancy_map_shape[0] + j].set_text(cell)
+
+        else:
+            if i != 0 and type(self.omaps[i - 1]) is np.ndarray:
+                for k, j in self.OCC_MAP_SQUARES:
+                    self.labels[k * config.occupancy_map_shape[0] + j].set_text('')
+
+        self.occ_map.set_data(self.colored_omaps[i].astype('uint8'))
+
+        return *self.gt_artists.values(), *self.odom_artists.values(), \
+               self.camera, self.run_indicator, \
+               self.occ_map, *self.labels,
 
 
 def mergedfs(dfs, tolerance='1s'):
@@ -295,8 +367,7 @@ def reset_odom_run(df, instructions):
     return df
 
 
-
-def get_map(rel_transform, sensor_readings, robot_geometry, coords, delta):
+def get_map(rel_transform, sensor_readings, delta):
     '''Given a pose, constructs the occupancy map w.r.t. that pose.
     An occupancy map has 3 possible values:
     1 = object present;
@@ -305,24 +376,25 @@ def get_map(rel_transform, sensor_readings, robot_geometry, coords, delta):
     Args:
             rel_transform:  the tranformation matrix from which to compute the occupancy map.
             sensor_readings:  a list of sensors' readings.
-            robot_geometry: the transformations from robot frame to sensors' frames.
-            coords: a list of relative coordinates of the form [(x1, y1), ...].
+            ROBOT_GEOMETRY_SIMPLE: the transformations from robot frame to sensors' frames.
+            COORDS: a list of relative coordinates of the form [(x1, y1), ...].
             delta: the maximum distance between a sensor reading and a coord to be matched.
     Returns:
             an occupancy map generated from the relative pose using coords and sensors' readings.
     '''
+    #print([type(x) for x in [rel_transform, sensor_readings, delta]])
     # locate objects based on the distances read by the sensors
     sensor_readings_homo = np.array([[r, 0., 1.] for r in sensor_readings])
     # batch matrix multiplication
     rel_object_poses = np.einsum('ijk,ik->ij',
                                  np.matmul(rel_transform,
-                                           robot_geometry),
+                                           ROBOT_GEOMETRY_SIMPLE),
                                  sensor_readings_homo)[:, :-1]
     # initialize occupancy map to -1
-    occupancy_map = np.full((coords.shape[0],), -1, dtype=np.float)
+    occupancy_map = np.full((COORDS.shape[0],), -1, dtype=np.float)
     # compute distances between object poses and coords
     distances = np.linalg.norm(
-        coords[:, None, :] - rel_object_poses[None, :, :],
+        COORDS[:, None, :] - rel_object_poses[None, :, :],
         axis=-1)
     # find all coords with distance <= delta
     closer_than_delta = distances <= delta
@@ -332,9 +404,61 @@ def get_map(rel_transform, sensor_readings, robot_geometry, coords, delta):
     return occupancy_map
 
 
-def my_map(df):
-    active_sensor_ratio = len(df[df['sensor']])/len(df)
-    print(f'Iterations with active virtual sensor: {active_sensor_ratio*100.:.1f}%')
+def aggregate(maps):
+    """Aggregates a list of occupancy maps into a single one.
+    Args:
+            maps: a list of occupancy maps.
+    Returns:
+            an aggregate occupancy map.
+    """
+    aggregated_map = np.full_like(maps[0], -1)
+    if (maps == -1).all():
+        return aggregated_map
+    map_mask = (maps != -1).any(1)
+    nonempty_maps = maps[map_mask]
+    cell_mask = (nonempty_maps != -1).any(0)
+    nonempty_cells = nonempty_maps[:, cell_mask]
+    nonempty_cells[nonempty_cells == -1] = np.nan
+    aggregated_map[cell_mask] = stats.mode(
+        nonempty_cells, 0, nan_policy='omit')[0][0]
+    return aggregated_map
+
+
+def add_occupancy_maps(df: pd.DataFrame, window_size=100):
+    """
+    Adds occupancy maps in the input DataFrame from index half_window to len(df) - half_window;
+    The remaining iterations have NaN.
+    @param df: DataFrame with ground truth odometry
+    @return:
+    """
+
+    gt_labels = ['ground_truth_odom_x', 'ground_truth_odom_y', 'ground_truth_odom_theta']
+    df['gt_pose'] = df[gt_labels].apply(mktransf, axis=1)
+
+    half_window = window_size // 2
+    empty_block = [np.NaN] * half_window
+
+    def rolling_occupancy_map(group):
+        """ Set the occupancy maps to the right indices """
+        print('Processing new run')
+        gt_pose_id_col = group.columns.get_loc("gt_pose")
+
+        maps = []
+        for i in range(half_window, len(group) - half_window):
+            start_pose = group.iat[i, gt_pose_id_col]
+            win = group.iloc[i - half_window:i + half_window]
+            rt = start_pose @ np.linalg.inv(np.stack(win['gt_pose']))
+            sr = np.where(win['sensor'], 0.12, 0.)[..., np.newaxis]
+            local_maps = np.array([get_map(rel_transform=rt[j], sensor_readings=sr[j], delta=config.occupancy_map_delta)
+                                   for j in range(window_size)])
+            #maps.append(np.rot90(omap.reshape(20, 20), 1))
+            maps.append(aggregate(local_maps))
+
+        return pd.Series(empty_block + maps + empty_block)
+
+    df['occupancy_map'] = df.drop(['image']+gt_labels,axis=1)\
+        .groupby('run').apply(rolling_occupancy_map).to_numpy().flatten()
+    df.drop('gt_pose', axis=1, inplace=True)
 
 
 def main(args=None):
@@ -348,8 +472,11 @@ def main(args=None):
             fp_files = glob.glob(f'{dir.path}/*.h5')
             files = [os.path.basename(x) for x in fp_files]
 
-            if len(files) >= 4 and 'summary.hdf5' not in files:
-
+            if 'unified.h5' in files:
+                print('Using cached dataset')
+                df = pd.read_hdf(f'{dir.path}/unified.h5', key='df')
+            elif len(files) >= 4:
+                print('Preparing dataset')
                 last_snapshot = {}
                 while len(last_snapshot) == 0:
                     try:
@@ -369,7 +496,9 @@ def main(args=None):
                 df = mergedfs(last_snapshot)
 
                 # Remove meaningless runs
-                df = df[df['run'].map(df['run'].value_counts()) > 10]
+                too_short = df['run'].map(df['run'].value_counts()) > config.window_size // 2
+                df = df[too_short]
+                print(f'Unique runs: {len(df["run"].unique())} ({too_short.astype(int).sum()} iterations discarded)')
 
                 # Reset odometry at the start of each run
                 instructions = {'translation': [('ground_truth_odom_x', 'x'),
@@ -380,15 +509,19 @@ def main(args=None):
                 # Fix timezone
                 df.index = df.index.tz_localize('UTC').tz_convert('Europe/Rome')
 
-                # Select a random window of n sec for a preview video
-                # if not os.path.exists(f'{dir.path}/preview.mp4'):
-                #     rate, seconds = 60, 350
-                #     window = min(rate * seconds, len(df) - 1)
-                #     start = np.random.randint(len(df) - window)
-                #     Animator(df.reset_index().loc[start:start + window, :], targets,
-                #              save_path=(dir.path, 'preview'), rate=rate)
+                active_sensor_ratio = len(df[df['sensor']]) / len(df)
+                print(f'Iterations with active virtual sensor: {active_sensor_ratio * 100.:.1f}%')
 
-                my_map(df)
+                add_occupancy_maps(df, window_size=config.window_size)
+
+                df.to_hdf(f'{dir.path}/unified.h5', key='df', mode='w')
+
+            # Select a random window of n sec for a preview video
+            path = f"{dir.path}/preview.mp4"
+            # if not os.path.exists(path):
+            Animator(df.reset_index(), targets, save_path=path, rate=30, frames=None)
+            subprocess.run(['/Applications/mpv.app/Contents/MacOS/mpv', '--loop-file', 'yes', path],
+                           capture_output=True)
 
     except FileNotFoundError:
         print(f"Cannot find points.json file (at {os.path.dirname(points_file)})")

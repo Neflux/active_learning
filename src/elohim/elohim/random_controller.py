@@ -4,47 +4,32 @@ import json
 import os
 import time
 from functools import partial
-from logging import DEBUG, INFO
 
-import matplotlib.pyplot as plt
 import numpy as np
 import rclpy
-from PIL import Image as Image
 from ament_index_python import get_package_share_directory
-from cv_bridge import CvBridge
 from gazebo_msgs.msg import EntityState
 from gazebo_msgs.srv import SetEntityState
 from geometry_msgs.msg import Twist, Pose, Vector3, Point
-from matplotlib.widgets import Button
 from nav_msgs.msg import Odometry
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
-from rclpy.duration import Duration
 from rclpy.logging import LoggingSeverity
 from rclpy.node import Node
-from sensor_msgs.msg import Image as ROSImage
 from sensor_msgs.msg import Range
 from std_msgs.msg import Bool, Int64
 
 try:  # Prioritize local src in case of PyCharm execution, no need to rebuild with colcon
     from service_utils import SyncServiceCaller
     from utils import euler_to_quaternion, random_PIL, maxcppfloat, mypause
+    import config
 except ImportError:
     from elohim.service_utils import SyncServiceCaller
     from elohim.utils import euler_to_quaternion, random_PIL, maxcppfloat, mypause
+    import elohim.config as config
 
 
-class IllegalPosition(Exception):
-    def __init__(self, message):
-        self.message = message
-        super().__init__(self.message)
-
-
-# asdasd noinspection PyUnresolvedReferences
 class RandomController(Node):
     STOP_TWIST = Twist(linear=Vector3(x=0.))
-    TURN_RIGHT = Twist(angular=Vector3(z=-1.))
-    TURN_LEFT = Twist(angular=Vector3(z=-1.))
-    GO_TWIST = Twist(linear=Vector3(x=0.15))
+    GO_TWIST = Twist(linear=Vector3(x=config.forward_velocity))
     SENSORS = ['left', 'center_left', 'center', 'center_right', 'right']
 
     def __init__(self, targets: np.ndarray,
@@ -112,8 +97,7 @@ class RandomController(Node):
         self.twist_publisher.publish(self.STOP_TWIST)
 
     def rotate(self, rotation):
-        """
-            Updates internal state and sets Thymio twist to the specified rotation value
+        """ Updates internal state and sets Thymio twist to the specified rotation value
         @param rotation: the yaw (z-axis) rotation speed in radians per second
         """
         self.update_state('rotating')
@@ -122,7 +106,13 @@ class RandomController(Node):
 
     def update_state(self, state):
         """ Updates internal state with specified str """
+        print(f'\rStatus: {state}', end='')
         self.state = state
+
+    def reset(self, msg, reset=False):
+        """ Unsubscribes from all topics to prevent false flags """
+        self.stop(reset)
+        self.verbose = msg
 
     def broadcast_run_id(self, id='auto'):
         """ Broadcasts the unique id of the run,  """
@@ -134,36 +124,33 @@ class RandomController(Node):
             self.ref_time = self.get_clock().now()
         diff = self.get_clock().now() - self.ref_time
         remaining = seconds - diff.nanoseconds * 1e-9
-        #print(f'\r timer {remaining if remaining > 0 else 0:.2f}s', end='')
+        # print(f'\r timer {remaining if remaining > 0 else 0:.2f}s', end='')
         result = remaining < 0
         if result:
             self.ref_time = None
-            #print()
+            # print()
             return True
         return False
-
-    def reset(self, msg, reset=False):
-        """ Unsubscribes from all topics to prevent false flags """
-        self.stop(reset)
-        self.verbose = msg
 
     def new_run(self):
         self.update_state('ready')
         self.subscribe()
         self.run_counter += 1
+        self.verbose = f'Run {self.run_counter}, incomplete'
         # self.debug_radar = {k: np.inf for k in self.SENSORS}
 
     def sensor_callback(self, key, msg):
         r = msg.range if msg.range != maxcppfloat else np.inf
         signal = False
-        if 0.01 < r:
+        if config.minimum_valid_threshold < r:
             # self.debug_radar[key] = r
             # print(' '.join([f'{v:.2f}' for v in self.debug_radar.values()]))
-            if r < 0.10:
+            if r < config.active_signal_threshold:
                 signal = True
 
-            if r < 0.03:
-                self.reset(f'{key} sensor, close object ({r:.6f})')
+            if r < config.obstacle_dist_threshold:
+                if self.state == 'running':
+                    self.reset(f'\'{key}\' sensor detected an object ({r:.6f})', reset=False)
 
         self.signal_pub.publish(Bool(data=signal))
 
@@ -194,7 +181,7 @@ def run(node, service_caller, x, y, t):
     node.new_run()
     start = time.time()
     try:
-        rotations = [1., -1., 1., -0.5]
+        rotations = [1., -0.5]
 
         # idle -> ready -> running -> stopped -> ready -> ..
 
@@ -205,18 +192,20 @@ def run(node, service_caller, x, y, t):
             if state == 'ready':
                 node.go()
             elif state == 'stopped':
-                if node.time_elapsed(seconds=0.1):
+                if node.time_elapsed(seconds=0.3):
+                    if 'left' in node.verbose:
+                        rotations = list(-1 * np.array(rotations))
                     node.rotate(rotations.pop())
             elif state == 'rotating':
                 if node.time_elapsed(seconds=3):
-                    if len(rotations):
+                    if len(rotations) != 0:
                         node.rotate(rotations.pop())
                     else:
                         node.stop(reset=True)
             elif state == 'reset':
                 id = -1
                 if node.time_elapsed(1):
-                    print(f'{node.verbose} - Time: {time.time() - start:.2f}s')
+                    print(f'\rExit status: {node.verbose} - Time: {time.time() - start:.2f}s')
                     break
 
             node.broadcast_run_id(id=id)
@@ -224,7 +213,7 @@ def run(node, service_caller, x, y, t):
 
     except KeyboardInterrupt:
         node.stop()
-        print(" Stopping thymio and signal broadcasting")
+        print("\nStopping thymio and signal broadcasting")
         return False
     return True
 
@@ -236,7 +225,7 @@ parser.add_argument('@@s', nargs=3, help="x,y,t", type=float, default=None)
 def main(args=None):
     rclpy.init(args=args)
 
-    # args = ['@@s', '7.50', '-7.50', '4.10']
+    # args = ['@@s', '0.50', '-0.50', '3.8']
     args = parser.parse_args(args)
 
     points_file = os.path.join(get_package_share_directory('elohim'), 'points.json')

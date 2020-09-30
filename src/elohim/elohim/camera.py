@@ -42,9 +42,8 @@ class Monitor(Node):
 
     def close(self, evt):
         self.locked = True
-        self.timer.cancel()
-        self.timer.destroy()
-        exit()
+        #self.timer.cancel()
+        #self.timer.destroy()
 
     def unlock(self):
         self.locked = False
@@ -73,7 +72,7 @@ def main(args=None):
     try:
         rclpy.spin(monitor)
     except KeyboardInterrupt:
-        print("\nNode stopped")
+        print("\n\tCamera node stopped")
     finally:
         monitor.destroy_node()
         rclpy.shutdown()
