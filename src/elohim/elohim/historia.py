@@ -4,9 +4,11 @@ import warnings
 from collections import defaultdict
 from functools import partial
 from pathlib import Path
+from shutil import copyfile
 
 import pandas as pd
 import rclpy
+from ament_index_python import get_package_share_directory
 from cv_bridge import CvBridge
 from nav_msgs.msg import Odometry
 from rclpy.duration import Duration
@@ -62,6 +64,9 @@ class Recorder(Node):
 
         timestr = time.strftime("%d%m-%H%M%S")
         Path(os.path.join('history', timestr)).mkdir(parents=True, exist_ok=True)
+        # TODO: copy here the points file
+        copyfile(os.path.join(get_package_share_directory('elohim'), 'points.json'),
+                 os.path.join("history", timestr, 'points.json'))
 
         start = self.get_clock().now()
         for k, v in self.topics.items():

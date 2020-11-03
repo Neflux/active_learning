@@ -462,13 +462,14 @@ def add_occupancy_maps(df: pd.DataFrame, window_size=100):
 
 
 def main(args=None):
-    points_file = os.path.join(get_package_share_directory('elohim'), 'points.json')
+    # TODO: load from local file
     try:
-        with open(points_file) as f:
-            points = json.load(f)
-        targets = np.array([[t["x"], t["y"]] for t in points["targets"]])
-
         for dir in list(os.scandir('history')):
+            points_file = os.path.join(dir, 'points.json')
+            with open(points_file) as f:
+                points = json.load(f)
+            targets = np.array([[t["x"], t["y"]] for t in points["targets"]])
+
             fp_files = glob.glob(f'{dir.path}/*.h5')
             files = [os.path.basename(x) for x in fp_files]
 
