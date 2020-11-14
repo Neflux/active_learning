@@ -16,6 +16,8 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 from ament_index_python import get_package_share_directory
+import matplotlib
+matplotlib.rcParams['axes.unicode_minus'] = False
 from matplotlib import axes, figure, transforms, animation
 from matplotlib.animation import FuncAnimation
 from matplotlib.collections import LineCollection
@@ -41,6 +43,7 @@ class Animator:
                                              range(config.occupancy_map_shape[0])))
 
     def __init__(self, df, static_targets, rate=30, save_path=None, frames=None):
+
         """Given a dataframe and a list of coordinates of static targets, builds a FuncAnimation.
             The animations shows the top down view, and the live camera feed (ax1 and ax2).
             TODO: occupancy map ax3
@@ -54,6 +57,9 @@ class Animator:
                     @param rate: rate of the animation
                     @param save_path: if specified, the animation will be saved at this path instead of being shown
             """
+        from matplotlib import rc
+        #rc('axes', unicode_minus=False)
+        #rc('font', **{'family': 'sans-serif', 'sans-serif': ['Helvetica']})
 
         self.rate = rate
 
@@ -74,11 +80,11 @@ class Animator:
         rd = pd.DataFrame({'len': rd, 'end': rd.cumsum().astype(int)})
         self.run_dict = rd.to_dict()
 
-        self.omaps = [x.reshape(20,20) if isinstance(x, np.ndarray) else x for x in df['occupancy_map']]
+        self.omaps = [x.reshape(20, 20) if isinstance(x, np.ndarray) else x for x in df['occupancy_map']]
         self.colored_omaps = []
         for x in self.omaps:
             if type(x) is np.ndarray:
-                x = x.reshape(20,20)
+                x = x.reshape(20, 20)
                 res = np.empty((20, 20, 3))
                 res[x == -1] = (190, 190, 190)
                 res[x == 0] = (0, 255, 0)
@@ -112,9 +118,8 @@ class Animator:
             clip_path = Polygon(np.empty((3, 2)), fill=False, alpha=0)
             return fov_area, clip_path
 
-        from matplotlib import rc
-        # rc('font',**{'family':'sans-serif','sans-serif':['Helvetica']})
-        rc('font', **{'family': 'serif', 'serif': ['Sathu']})  # Hiragino Maru Gothic Pro
+
+        #rc('font', **{'family': 'serif', 'serif': ['Sathu']})  # Hiragino Maru Gothic Pro
         fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(12, 5),
                                             dpi=120)  # type:figure.Figure, (axes.Axes, axes.Axes, axes.Axes)
         self.ax1 = ax1
@@ -185,6 +190,7 @@ class Animator:
             self.anim.save(save_path, writer=writer,
                            progress_callback=lambda i, n: print(f'\rSaving: {i * 100. / n:.2f} %', end=''))
             print(f"\rSaving process complete. File location: {save_path}")
+        plt.close()
 
     def init(self):
         """ FuncAnimation init function, mandatory for the setup """
@@ -295,7 +301,7 @@ def mergedfs(dfs, tolerance='1s'):
             dfs[topic] = df = df.loc[~df.index.duplicated(keep='first')]
 
         # Get minimum sized df
-        print('\t', os.path.basename(topic).ljust(max_topic_name + 1), len(df))
+        print(os.path.basename(topic).ljust(max_topic_name + 1), len(df))
         if not min_topic or len(dfs[min_topic]) > len(df):
             min_topic = topic
 
@@ -317,7 +323,21 @@ def mergedfs(dfs, tolerance='1s'):
     return result
 
 
-def reset_odom_run(df, instructions):
+def reset_odom_run(df):
+    input_cols = ['ground_truth_odom_x', 'ground_truth_odom_y', 'ground_truth_odom_theta']
+    output_cols = ['gt_rel_' + label.rsplit('_', 1)[-1] for label in input_cols]
+
+    def rotate(p):
+        angle = p.iloc[0, -1]
+        R = np.array([[np.cos(angle), -np.sin(angle)],
+                      [np.sin(angle), np.cos(angle)]])
+        result = np.squeeze((R @ (p.values.T - np.array([[0], [0]])) + np.array([[0], [0]])).T)
+
+
+    df[output_cols] = df.groupby('run')[input_cols].apply(rotate)
+
+
+def reset_odom_run_old(df, instructions):
     """Displaces and rotates the cumulative odometry to match the starting pose of ground truth for each run
         Args:
             @param df: the already merged df that contains all the synced odometry data
@@ -382,7 +402,7 @@ def get_map(rel_transform, sensor_readings, delta):
     Returns:
             an occupancy map generated from the relative pose using coords and sensors' readings.
     '''
-    #print([type(x) for x in [rel_transform, sensor_readings, delta]])
+    # print([type(x) for x in [rel_transform, sensor_readings, delta]])
     # locate objects based on the distances read by the sensors
     sensor_readings_homo = np.array([[r, 0., 1.] for r in sensor_readings])
     # batch matrix multiplication
@@ -451,12 +471,12 @@ def add_occupancy_maps(df: pd.DataFrame, window_size=100):
             sr = np.where(win['sensor'], 0.12, 0.)[..., np.newaxis]
             local_maps = np.array([get_map(rel_transform=rt[j], sensor_readings=sr[j], delta=config.occupancy_map_delta)
                                    for j in range(window_size)])
-            #maps.append(np.rot90(omap.reshape(20, 20), 1))
+            # maps.append(np.rot90(omap.reshape(20, 20), 1))
             maps.append(aggregate(local_maps))
 
         return pd.Series(empty_block + maps + empty_block)
 
-    df['occupancy_map'] = df.drop(['image']+gt_labels,axis=1)\
+    df['occupancy_map'] = df.drop(['image'] + gt_labels, axis=1) \
         .groupby('run').apply(rolling_occupancy_map).to_numpy().flatten()
     df.drop('gt_pose', axis=1, inplace=True)
 
@@ -466,6 +486,8 @@ def main(args=None):
     try:
         for dir in list(os.scandir('history')):
             points_file = os.path.join(dir, 'points.json')
+            if not os.path.exists(points_file):
+                continue
             with open(points_file) as f:
                 points = json.load(f)
             targets = np.array([[t["x"], t["y"]] for t in points["targets"]])

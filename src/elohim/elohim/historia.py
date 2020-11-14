@@ -28,7 +28,7 @@ get_time = lambda node: node.get_clock().now().nanoseconds
 
 
 class Recorder(Node):
-    def __init__(self, rclpy, topics, save_time=None, rate=None, namespace="thymioX"):
+    def __init__(self, rclpy, topics, target_node=None, save_topic=None, rate=None, namespace="thymioX"):
         """ Initialises the recording node. Sets up the subscriptions and the
         Args:
             @param topics: a dictionary that specifies the topics to record and all the necessary parameters.
@@ -43,7 +43,6 @@ class Recorder(Node):
         super().__init__('recorder_node')
         self.rlcpy = rclpy
         self.topics = topics
-        self.save_time = save_time
         r = min([v['qos'] for v in self.topics.values()])
         if rate is not None:
             if rate > r:
@@ -61,6 +60,10 @@ class Recorder(Node):
         self.subs_handlers = []
 
         # self.group = MutuallyExclusiveCallbackGroup()
+        if target_node is not None:
+            while target_node not in self.get_node_names():
+                print(f'Target topic "{target_node}" is not running. Re-checking in 3 seconds.. ')
+                time.sleep(3)
 
         timestr = time.strftime("%d%m-%H%M%S")
         Path(os.path.join('history', timestr)).mkdir(parents=True, exist_ok=True)
@@ -68,8 +71,13 @@ class Recorder(Node):
         copyfile(os.path.join(get_package_share_directory('elohim'), 'points.json'),
                  os.path.join("history", timestr, 'points.json'))
 
+        self.last_value = None
+        self.save_topic = save_topic['name']
+
+        self.should_save = {}
         start = self.get_clock().now()
         for k, v in self.topics.items():
+
             self.last_time[k] = start
             self.topics[k]['group'] = group = None  # MutuallyExclusiveCallbackGroup()
 
@@ -87,9 +95,29 @@ class Recorder(Node):
             self.topics[k]['store'] = store = pd.HDFStore(file_path)
             self.create_subscription(v['type'], topic, partial(self.process_row, v["simplify"], k, store, min_itemsize),
                                      qos, callback_group=group)
+
+            self.should_save[k] = False
+            if k == self.save_topic:
+                max_rate = max([v['qos'] for v in self.topics.values()])
+                print(f'Status of topic "{k}" will be used to schedule saving operations (rate: {max_rate})')
+                self.create_subscription(v['type'], topic,
+                                         partial(self.change_listener, v['simplify'], save_topic['save_value']),
+                                         max_rate, callback_group=group)
+
+
+
         print("Subscription setup:\t\n" + ','.join(k for k in self.topics.keys()))
 
-        self.create_timer(30, self.display_summary)
+        self.create_timer(30, partial(self.display_summary, simple=True))
+
+    def change_listener(self, simplify, target, msg):
+        current_value = simplify(msg)['run']
+
+        if current_value != self.last_value and current_value == target:
+            #print(f'SHOULD NOW SAVE ({self.last_value} -> {current_value})')
+            self.should_save.update({k: True for k in self.topics.keys()})
+
+        self.last_value = current_value
 
     def process_row(self, simplify, key, store, min_itemsize, msg):
         """ Simplifies the last received messsage of a topic and appends it to a local cache.
@@ -106,33 +134,33 @@ class Recorder(Node):
         lst = self.cache[key]
         msg = simplify(msg)
 
-        if len(lst) >= 100:
-            save = False
-            if self.save_time is not None:
-                if self.save_time['key'] == key and self.save_time['key'] == msg:
-                    save = True
-
-            if self.save_time is None or save:
-                df = pd.DataFrame(lst).drop_duplicates('time').set_index(
-                    'time')  # TODO: no race condition, no artifacts?
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=PerformanceWarning)
-                    store.append(key, df, min_itemsize=min_itemsize)
-                lst.clear()
+        if self.should_save[key] and len(lst) > 0:
+            df = pd.DataFrame(lst).drop_duplicates('time').set_index(
+                'time')  # TODO: no race condition, no artifacts?
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=PerformanceWarning)
+                store.append(key, df, min_itemsize=min_itemsize)
+            lst.clear()
+            self.should_save[key] = False
 
         self.last_time[key] = time = self.get_clock().now()
         msg['time'] = time.nanoseconds
         lst.append(msg)
 
-    def display_summary(self):
+    def display_summary(self, simple=False):
         """ Displays a quick summaries of the files that have been created so far and their sizes """
         # print(self.topics['run_counter']['store'].info())
-        longest_topic_name = max([len(k) for k, _ in self.topics.items()])
-        file_size_summary = [f'\t{str(k).ljust(longest_topic_name + 1)}: ' \
-                             f'{os.path.getsize(v["file_path"]) / 1000000.:.2f} MB'
-                             for k, v in self.topics.items() if os.path.exists(v["file_path"])]
-        if len(file_size_summary) > 0:
-            print('Files:\n' + '\n'.join(file_size_summary))
+        if simple:
+            sum_bytes = sum([os.path.getsize(v["file_path"])
+                             for v in self.topics.values() if os.path.exists(v["file_path"])])
+            print(f'Files total size: {sum_bytes / 1000000.:.2f} MB')
+        else:
+            longest_topic_name = max([len(k) for k, _ in self.topics.items()])
+            file_size_summary = [f'\t{str(k).ljust(longest_topic_name + 1)}: ' \
+                                 f'{os.path.getsize(v["file_path"]) / 1000000.:.2f} MB'
+                                 for k, v in self.topics.items() if os.path.exists(v["file_path"])]
+            if len(file_size_summary) > 0:
+                print('Files:\n' + '\n'.join(file_size_summary))
 
 
 def main(args=None):
@@ -146,19 +174,19 @@ def main(args=None):
     bridge = CvBridge()
     compress = lambda msg: {'image': binary_from_cv(bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough'),
                                                     jpeg_quality=50)}
-    recorder = Recorder(rclpy, topics={'odom': {'type': Odometry, 'qos': 20, 'simplify': odom},
-                                       'ground_truth/odom': {'type': Odometry, 'qos': 10, 'reliability': best_effort,
-                                                             'simplify': odom},
-                                       'head_camera/image_raw': {'type': Image, 'qos': 30, 'reliability': best_effort,
-                                                                 'simplify': compress,
-                                                                 'min_itemsize': {'image': 20000}},
-                                       'virtual_sensor/signal': {'type': Bool, 'qos': 30,
-                                                                 'simplify': lambda msg: {'sensor': msg.data}},
-                                       'run_counter': {'type': Int64, 'qos': 30,
-                                                       'simplify': lambda msg: {'run': msg.data}}},
-                        save_time=None
-                        )
 
+    recorder = Recorder(rclpy, target_node='random_controller',
+                        topics={'odom': {'type': Odometry, 'qos': 20, 'simplify': odom},
+                                'ground_truth/odom': {'type': Odometry, 'qos': 10, 'reliability': best_effort,
+                                                      'simplify': odom},
+                                'head_camera/image_raw': {'type': Image, 'qos': 30, 'reliability': best_effort,
+                                                          'simplify': compress,
+                                                          'min_itemsize': {'image': 20000}},
+                                'virtual_sensor/signal': {'type': Bool, 'qos': 30,
+                                                          'simplify': lambda msg: {'sensor': msg.data}},
+                                'run_counter': {'type': Int64, 'qos': 30,
+                                                'simplify': lambda msg: {'run': msg.data}}},
+                        save_topic={'name': 'run_counter', 'save_value': -1})
     try:
         rclpy.spin(recorder)
     except KeyboardInterrupt:
