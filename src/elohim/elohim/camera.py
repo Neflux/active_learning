@@ -16,7 +16,7 @@ def random_PIL():
 
 
 class Monitor(Node):
-    def __init__(self, camera_rate=10):
+    def __init__(self, camera_rate=30):
         super().__init__('monitor_node')
         self.camera_rate = camera_rate
         self.camera_period = 1. / camera_rate

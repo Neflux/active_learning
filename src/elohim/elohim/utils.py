@@ -4,6 +4,7 @@ import os
 
 import cv2
 import numpy as np
+import torch
 from PIL import Image
 from ament_index_python import get_package_share_directory
 from elohim.poisson_disc import Grid
@@ -123,7 +124,6 @@ COORDS = np.stack(np.meshgrid(
     np.linspace(-.4, .4, int(.8 / .04))
 )).reshape([2, -1]).T
 
-
 def binary_from_cv(cv2_img, jpeg_quality=90):
     retval, buf = cv2.imencode('.JPEG', cv2_img,
                                [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality,
@@ -188,3 +188,47 @@ def mypause(interval):
                 canvas.draw()
             canvas.start_event_loop(interval)
             return
+
+
+def add_arrow(line, xdata, ydata, step=1, direction='right', size=15, color=None):
+    """
+    add an arrow to a line.
+
+    line:       Line2D object
+    position:   x-position of the arrow. If None, mean of xdata is taken
+    direction:  'left' or 'right'
+    size:       size of the arrow in fontsize points
+    color:      if None, line color is taken.
+    """
+    if color is None:
+        color = line.get_color()
+
+    #xdata = line.get_xdata()
+    #ydata = line.get_ydata()
+
+    # if position is None:
+    #     position = xdata.mean()
+    # # find closest index
+    # start_ind = np.argmin(np.absolute(xdata - position))
+
+    for start_ind in range(len(xdata)-step, step, -step):
+
+        if direction == 'right':
+            end_ind = start_ind + 1
+        else:
+            end_ind = start_ind - 1
+        line.axes.annotate('',
+                           xytext=(xdata[start_ind], ydata[start_ind]),
+                           xy=(xdata[end_ind], ydata[end_ind]),
+                           arrowprops=dict(arrowstyle="->", color=color),
+                           size=size
+                           )
+
+def _moveaxis(tensor: torch.Tensor, source: int, destination: int) -> torch.Tensor:
+    dim = tensor.dim()
+    perm = list(range(dim))
+    if destination < 0:
+        destination += dim
+    perm.pop(source)
+    perm.insert(destination, source)
+    return tensor.permute(*perm)

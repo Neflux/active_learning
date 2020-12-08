@@ -54,6 +54,7 @@ def main(args=None):
     xml_sdf = get_resource(target, root=os.path.join(get_package_share_directory('elohim'), 'models'))
 
     np.random.seed(config.poisson_generation_seed)
+    print('Calculating obstacles..')
     _, targets = generate_map(config.poisson_generation_seed, density=config.poisson_disc_density,
                               threshold=config.poisson_disc_dist_threshold,
                               spawn_area=config.plane_side, step=config.spawn_dist_step)

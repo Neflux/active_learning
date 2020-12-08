@@ -15,7 +15,7 @@ from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import QoSReliabilityPolicy
 from sensor_msgs.msg import Image
-from std_msgs.msg import Bool, Int64
+from std_msgs.msg import Int64, Float64
 from tables import PerformanceWarning
 
 try:  # Prioritize local src in case of PyCharm execution, no need to rebuild with colcon
@@ -65,7 +65,7 @@ class Recorder(Node):
                 print(f'Target topic "{target_node}" is not running. Re-checking in 3 seconds.. ')
                 time.sleep(3)
 
-        timestr = time.strftime("%d%m-%H%M%S")
+        timestr = time.strftime("%m%d-%H%M%S")
         Path(os.path.join('history', timestr)).mkdir(parents=True, exist_ok=True)
         # TODO: copy here the points file
         copyfile(os.path.join(get_package_share_directory('elohim'), 'points.json'),
@@ -92,8 +92,8 @@ class Recorder(Node):
                                                                    v['clean_topic'].replace('/', '_') + '.h5')
             min_itemsize = v.pop('min_itemsize', {})
 
-            self.topics[k]['store'] = store = pd.HDFStore(file_path)
-            self.create_subscription(v['type'], topic, partial(self.process_row, v["simplify"], k, store, min_itemsize),
+            #self.topics[k]['store'] = store = pd.HDFStore(file_path)
+            self.create_subscription(v['type'], topic, partial(self.process_row, v["simplify"], k, file_path, min_itemsize),
                                      qos, callback_group=group)
 
             self.should_save[k] = False
@@ -104,28 +104,27 @@ class Recorder(Node):
                                          partial(self.change_listener, v['simplify'], save_topic['save_value']),
                                          max_rate, callback_group=group)
 
-
-
         print("Subscription setup:\t\n" + ','.join(k for k in self.topics.keys()))
-
-        self.create_timer(30, partial(self.display_summary, simple=True))
+        #self.create_timer(30, partial(self.display_summary, simple=True))
 
     def change_listener(self, simplify, target, msg):
         current_value = simplify(msg)['run']
 
         if current_value != self.last_value and current_value == target:
             #print(f'SHOULD NOW SAVE ({self.last_value} -> {current_value})')
+            #print('Saving files: ', end='')
             self.should_save.update({k: True for k in self.topics.keys()})
+        if self.last_value == target and current_value != target:
+            self.display_summary(simple=True)
 
         self.last_value = current_value
 
-    def process_row(self, simplify, key, store, min_itemsize, msg):
+    def process_row(self, simplify, key, file_path, min_itemsize, msg):
         """ Simplifies the last received messsage of a topic and appends it to a local cache.
          When the list is big enough, its content are stored to file system and the list is then emptied.
          Args:
             @param simplify: a custom function that returns only the bare minimum that is necessary from a message
             @param key: the topic name, which serves as key to obtain the last read value on the small cache
-            @param store: the file handle of the hdf5 storage for this topic
             @param min_itemsize: the minimum itemsize for the appended block in HDF5. Useful for images.
                     """
         if self.get_clock().now() - self.last_time[key] < self.period:
@@ -137,31 +136,40 @@ class Recorder(Node):
         if self.should_save[key] and len(lst) > 0:
             df = pd.DataFrame(lst).drop_duplicates('time').set_index(
                 'time')  # TODO: no race condition, no artifacts?
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=PerformanceWarning)
-                store.append(key, df, min_itemsize=min_itemsize)
+            start = time.time()
+            # with warnings.catch_warnings():
+            #     warnings.filterwarnings("ignore", category=PerformanceWarning)
+            #
+            #
+            #     with pd.HDFStore(file_path) as store:
+            #         store.append(key, df, min_itemsize=min_itemsize)
+            df.to_hdf(file_path, 'key', append=True, index=False, min_itemsize=min_itemsize)
+
+            #print(f'key: {key: <21}, time: {time.time()-start:.4f}')
             lst.clear()
             self.should_save[key] = False
 
-        self.last_time[key] = time = self.get_clock().now()
-        msg['time'] = time.nanoseconds
+        self.last_time[key] = t = self.get_clock().now()
+        msg['time'] = t.nanoseconds
         lst.append(msg)
 
     def display_summary(self, simple=False):
         """ Displays a quick summaries of the files that have been created so far and their sizes """
         # print(self.topics['run_counter']['store'].info())
+        output = ''
         if simple:
             sum_bytes = sum([os.path.getsize(v["file_path"])
                              for v in self.topics.values() if os.path.exists(v["file_path"])])
-            print(f'Files total size: {sum_bytes / 1000000.:.2f} MB')
+            output = f'\rFiles total size: {sum_bytes / 1000000.:.2f} MB'
         else:
             longest_topic_name = max([len(k) for k, _ in self.topics.items()])
             file_size_summary = [f'\t{str(k).ljust(longest_topic_name + 1)}: ' \
                                  f'{os.path.getsize(v["file_path"]) / 1000000.:.2f} MB'
                                  for k, v in self.topics.items() if os.path.exists(v["file_path"])]
             if len(file_size_summary) > 0:
-                print('Files:\n' + '\n'.join(file_size_summary))
-
+                output = '\nFiles:\n' + '\n'.join(file_size_summary)
+        if output != '':
+            print(output, end='')# + str(' '*(100-len(output))))
 
 def main(args=None):
     rclpy.init(args=args)
@@ -182,7 +190,7 @@ def main(args=None):
                                 'head_camera/image_raw': {'type': Image, 'qos': 30, 'reliability': best_effort,
                                                           'simplify': compress,
                                                           'min_itemsize': {'image': 20000}},
-                                'virtual_sensor/signal': {'type': Bool, 'qos': 30,
+                                'virtual_sensor/signal': {'type': Float64, 'qos': 30,
                                                           'simplify': lambda msg: {'sensor': msg.data}},
                                 'run_counter': {'type': Int64, 'qos': 30,
                                                 'simplify': lambda msg: {'run': msg.data}}},
@@ -192,9 +200,6 @@ def main(args=None):
     except KeyboardInterrupt:
         print("\nRecording stopped")
     finally:
-        for v in recorder.topics.values():
-            v['store'].close()
-
         recorder.display_summary()
         recorder.destroy_node()
         rclpy.shutdown()

@@ -15,7 +15,7 @@ from nav_msgs.msg import Odometry
 from rclpy.logging import LoggingSeverity
 from rclpy.node import Node
 from sensor_msgs.msg import Range
-from std_msgs.msg import Bool, Int64
+from std_msgs.msg import Int64, Float64
 
 try:  # Prioritize local src in case of PyCharm execution, no need to rebuild with colcon
     from service_utils import SyncServiceCaller
@@ -30,7 +30,9 @@ except ImportError:
 class RandomController(Node):
     STOP_TWIST = Twist(linear=Vector3(x=0.))
     GO_TWIST = Twist(linear=Vector3(x=config.forward_velocity))
-    SENSORS = ['left', 'center_left', 'center', 'center_right', 'right']
+    SENSORS = ['right', 'center_left', 'center', 'center_right', 'left']
+
+    # SENSORS = ['center']
 
     def __init__(self, targets: np.ndarray,
                  plane_side: float = 10.1,
@@ -56,7 +58,7 @@ class RandomController(Node):
         # Subscribers and publishers
 
         self.twist_publisher = self.create_publisher(Twist, f'/{thymio_name}/cmd_vel', qos_profile=self.raw_rate)
-        self.signal_pub = self.create_publisher(Bool, f'/{thymio_name}/virtual_sensor/signal', qos_profile=60)
+        self.signal_pub = self.create_publisher(Float64, f'/{thymio_name}/virtual_sensor/signal', qos_profile=60)
         self.run_counter_pub = self.create_publisher(Int64, f'/{thymio_name}/run_counter', qos_profile=60)
 
         self.sensor_subs, self.odom_sub = [], None
@@ -141,18 +143,20 @@ class RandomController(Node):
 
     def sensor_callback(self, key, msg):
         r = msg.range if msg.range != maxcppfloat else np.inf
-        signal = False
-        if config.minimum_valid_threshold < r:
+        if r > config.minimum_valid_threshold:
             # self.debug_radar[key] = r
             # print(' '.join([f'{v:.2f}' for v in self.debug_radar.values()]))
-            if r < config.active_signal_threshold:
-                signal = True
+            # if r < config.active_signal_threshold and key == 'center':
+            #     signal = msg.range
 
             if r < config.obstacle_dist_threshold:
                 if self.state == 'running':
                     self.reset(f'\'{key}\' sensor detected an object ({r:.6f})', reset=False)
 
-        self.signal_pub.publish(Bool(data=signal))
+            if key == 'center':
+                self.signal_pub.publish(Float64(data=min(r, config.max_sensor_threshold)))
+        elif key == 'center':
+            self.signal_pub.publish(Float64(data=config.max_sensor_threshold))
 
     def pose_callback(self, msg):
         pos = msg.pose.pose.position
@@ -175,13 +179,13 @@ def run(node, service_caller, x, y, t):
 
     es = EntityState(name=node.robot_name)
     es.pose = Pose(position=Point(x=x, y=y), orientation=euler_to_quaternion(yaw=t))
-    service_caller(srv=SetEntityState, srv_namespace="ros_state/set_entity_state", request_dict={"state": es})
+    sc = service_caller(srv=SetEntityState, srv_namespace="ros_state/set_entity_state", request_dict={"state": es})
     print(f"[Run {str(node.run_counter).rjust(2)}]: Thymio teleported to (x:{x:.2f}, y:{y:.2f}, t:{t:.2f})")
 
     node.new_run()
     start = time.time()
     try:
-        rotations = [1., -0.5]
+        rotations = [0.15, -0.15]
 
         # idle -> ready -> running -> stopped -> ready -> ..
 
@@ -197,16 +201,18 @@ def run(node, service_caller, x, y, t):
                         rotations = list(-1 * np.array(rotations))
                     node.rotate(rotations.pop())
             elif state == 'rotating':
-                if node.time_elapsed(seconds=3):
+                if node.time_elapsed(seconds=10):
                     if len(rotations) != 0:
                         node.rotate(rotations.pop())
                     else:
                         node.stop(reset=True)
             elif state == 'reset':
                 id = -1
-                if node.time_elapsed(1):
+                if node.time_elapsed(3):
                     print(f'\rExit status: {node.verbose} - Time: {time.time() - start:.2f}s')
                     break
+                    import torchvision.models
+
 
             node.broadcast_run_id(id=id)
             rclpy.spin_once(node, timeout_sec=0.)
@@ -214,8 +220,8 @@ def run(node, service_caller, x, y, t):
     except KeyboardInterrupt:
         node.stop()
         print("\nStopping thymio and signal broadcasting")
-        return False
-    return True
+        return -1
+    return 1
 
 
 parser = argparse.ArgumentParser(description='Process some integers.', prefix_chars='@')
@@ -257,7 +263,7 @@ def main(args=None):
         r(*args.s)
     else:
         for (x, y), t in spawn_poses:
-            if not r(x, y, t):
+            if r(x, y, t) < 0:
                 break
 
     random_controller.destroy_node()
