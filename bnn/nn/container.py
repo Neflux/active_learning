@@ -15,8 +15,8 @@ class BayesianModule(Module):
 
 class BayesianNetworkModule(Module):
 
-    def __init__(self, in_channels, out_channels, samples=30):
-        super(BayesianNetworkModule, self).__init__()
+    def __init__(self, in_channels, out_channels, samples=30, **kwargs):
+        super(BayesianNetworkModule, self).__init__(**kwargs)
 
         self.samples = samples
         self.in_channels = in_channels
@@ -29,6 +29,7 @@ class BayesianNetworkModule(Module):
         return traverse(self, fn, *args, **kwargs)
 
     def forward(self, x, samples=None, *args, **kwargs):
+
         if samples is None:
             samples = self.samples
 

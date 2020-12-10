@@ -1,6 +1,7 @@
 import io
 import json
 import os
+from random import choice
 
 import cv2
 import numpy as np
@@ -232,3 +233,20 @@ def _moveaxis(tensor: torch.Tensor, source: int, destination: int) -> torch.Tens
     perm.pop(source)
     perm.insert(destination, source)
     return tensor.permute(*perm)
+
+
+def random_session_name():
+    colors = os.path.join('utils', 'colors.txt')
+    animals = os.path.join('utils', 'animals.txt')
+    if os.path.exists(colors) and os.path.exists(animals):
+        with open(colors) as col:
+            colors = [l.strip() for l in col.readlines()]
+        with open(animals) as ani:
+            animals = [l.strip() for l in ani.readlines()]
+    else:
+        print('Animals/colors .txt files not found in /utils/*, using hardcoded combinations')
+        colors = ['green', 'red', 'blue']
+        animals = ['panda', 'maverick', 'fox']
+
+    result = choice(colors) + '-' + choice(animals)
+    return result.lower()
