@@ -12,19 +12,20 @@ class Grid:
     distance metric used and get different forms
     of 'discs'
     """
+
     def __init__(self, r, *size):
         self.r = r
 
         self.size = size
         self.dim = len(size)
 
-        self.cell_size = r/(sqrt(self.dim))
+        self.cell_size = r / (sqrt(self.dim))
 
-        self.widths = [int(size[k]/self.cell_size) + 1 for k in range(self.dim)]
+        self.widths = [int(size[k] / self.cell_size) + 1 for k in range(self.dim)]
 
         nums = product(*(range(self.widths[k]) for k in range(self.dim)))
 
-        self.cells = {num:-1 for num in nums}
+        self.cells = {num: -1 for num in nums}
         self.samples = []
         self.active = []
 
@@ -47,20 +48,19 @@ class Grid:
         self.r, 2*self.r
         """
 
-        rad = random.triangular(self.r, 2*self.r, .3*(2*self.r - self.r))
-             # was random.uniform(self.r, 2*self.r) but I think
-             # this may be closer to the correct distribution
-             # but easier to build
+        rad = random.triangular(self.r, 2 * self.r, .3 * (2 * self.r - self.r))
+        # was random.uniform(self.r, 2*self.r) but I think
+        # this may be closer to the correct distribution
+        # but easier to build
 
-        angs = [random.uniform(0, 2*pi)]
+        angs = [random.uniform(0, 2 * pi)]
 
         if self.dim > 2:
-            angs.extend(random.uniform(-pi/2, pi/2) for _ in range(self.dim-2))
+            angs.extend(random.uniform(-pi / 2, pi / 2) for _ in range(self.dim - 2))
 
-        angs[0] = 2*angs[0]
+        angs[0] = 2 * angs[0]
 
         return self.convert(point, rad, angs)
-
 
     def poisson(self, seed, k=30, static=[]):
         """
@@ -69,14 +69,14 @@ class Grid:
         self.clear()
 
         if len(static) == 0:
-            assert(seed is not None)
+            assert (seed is not None)
             self.samples.append(seed)
             self.active.append(0)
             self.update(seed, 0)
         else:
             self.samples.extend(static)
             self.active.extend(list(range(len(static))))
-            for s,a in zip(self.samples, self.active):
+            for s, a in zip(self.samples, self.active):
                 self.update(s, a)
 
         while self.active:
@@ -87,11 +87,11 @@ class Grid:
 
             if new_point:
                 self.samples.append(tuple(new_point))
-                self.active.append(len(self.samples)-1)
-                self.update(new_point, len(self.samples)-1)
+                self.active.append(len(self.samples) - 1)
+                self.update(new_point, len(self.samples) - 1)
             else:
                 self.active.remove(idx)
-            
+
         return self.samples
 
     def make_points(self, k, point):
@@ -121,17 +121,16 @@ class Grid:
         """
         for i in range(self.dim):
             if not (0 < new_point[i] < self.size[i] or
-               self.cellify(new_point) == -1):
+                    self.cellify(new_point) == -1):
                 return False
 
         for item in self.neighbors(self.cellify(point)):
-            if self.distance(self.samples[item], new_point) < self.r**2:
+            if self.distance(self.samples[item], new_point) < self.r ** 2:
                 return False
 
         for item in self.neighbors(self.cellify(new_point)):
-            if self.distance(self.samples[item], new_point) < self.r**2:
+            if self.distance(self.samples[item], new_point) < self.r ** 2:
                 return False
-
 
         return True
 
@@ -142,29 +141,29 @@ class Grid:
         from radial coordinates centered
         on the active point
         """
-        new_point = [point[0] + rad*cos(angs[0]), point[1] + rad*sin(angs[0])]
+        new_point = [point[0] + rad * cos(angs[0]), point[1] + rad * sin(angs[0])]
         if len(angs) > 1:
-            new_point.extend(point[i+1] + rad*sin(angs[i]) for i in range(1,len(angs)))
+            new_point.extend(point[i + 1] + rad * sin(angs[i]) for i in range(1, len(angs)))
         return new_point
 
     def cellify(self, point):
         """
         returns the cell in which the point falls
         """
-        return tuple(point[i]//self.cell_size for i in range(self.dim))
+        return tuple(point[i] // self.cell_size for i in range(self.dim))
 
     def distance(self, tup1, tup2):
         """
         returns squared distance between two points
         """
-        return sum((tup1[k] - tup2[k])**2 for k in range(self.dim))
+        return sum((tup1[k] - tup2[k]) ** 2 for k in range(self.dim))
 
     def cell_distance(self, tup1, tup2):
         """
         returns true if the L1 distance is less than 2
         for the two tuples
         """
-        return sum(abs(tup1[k]-tup2[k]) for k in range(self.dim)) <= 2
+        return sum(abs(tup1[k] - tup2[k]) for k in range(self.dim)) <= 2
 
     def neighbors(self, cell):
         """

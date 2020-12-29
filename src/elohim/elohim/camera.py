@@ -16,13 +16,13 @@ def random_PIL():
 
 
 class Monitor(Node):
-    def __init__(self, camera_rate=30):
+    def __init__(self, camera_rate=10):
         super().__init__('monitor_node')
         self.camera_rate = camera_rate
         self.camera_period = 1. / camera_rate
         self.bridge = CvBridge()
         self.create_subscription(ROSImage, '/thymioX/head_camera/image_raw', self.update_image,
-                                 qos_profile=rclpy.qos.QoSProfile(depth=60,
+                                 qos_profile=rclpy.qos.QoSProfile(depth=10,
                                                                   reliability=QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT))
 
         self.camera_feed = plt.imshow(random_PIL())

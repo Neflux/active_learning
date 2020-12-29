@@ -19,11 +19,11 @@ from std_msgs.msg import Int64, Float64
 
 try:  # Prioritize local src in case of PyCharm execution, no need to rebuild with colcon
     from service_utils import SyncServiceCaller
-    from utils_ros import euler_to_quaternion, random_PIL, maxcppfloat, mypause
+    from utils_ros import euler_to_quaternion, random_PIL, mypause
     import config
 except ImportError:
     from elohim.service_utils import SyncServiceCaller
-    from elohim.utils import euler_to_quaternion, random_PIL, maxcppfloat, mypause
+    from elohim.utils_ros import euler_to_quaternion, random_PIL, mypause
     import elohim.config as config
 
 
@@ -87,7 +87,8 @@ class RandomController(Node):
     def go(self):
         """ Updates internal state and sets Thymio velocity to cruising speed on its forward axis (x) """
         self.update_state('running')
-        self.twist_publisher.publish(self.GO_TWIST)
+        self.twist_publisher.publish(Twist(linear=Vector3(x=config.forward_velocity),
+                                           angular=Vector3(z=float(np.random.uniform(-0.5, 0.5, size=1)))))
 
     def stop(self, reset=False):
         """ Updates internal state and sets Thymio velocity to cruising speed on its forward axis (x)
@@ -98,11 +99,11 @@ class RandomController(Node):
             self.unsubscribe()
         self.twist_publisher.publish(self.STOP_TWIST)
 
-    def rotate(self, rotation):
+    def rotate(self, rotation, random=False):
         """ Updates internal state and sets Thymio twist to the specified rotation value
         @param rotation: the yaw (z-axis) rotation speed in radians per second
         """
-        self.update_state('rotating')
+        self.update_state('look_away' if random else 'rotating')
         # self.twist_publisher.publish(self.TURN_LEFT if rotation > 0 else self.TURN_RIGHT)
         self.twist_publisher.publish(Twist(angular=Vector3(z=rotation)))
 
@@ -142,7 +143,7 @@ class RandomController(Node):
         # self.debug_radar = {k: np.inf for k in self.SENSORS}
 
     def sensor_callback(self, key, msg):
-        r = msg.range if msg.range != maxcppfloat else np.inf
+        r = msg.range if msg.range < 0.15 else np.inf
         if r > config.minimum_valid_threshold:
             # self.debug_radar[key] = r
             # print(' '.join([f'{v:.2f}' for v in self.debug_radar.values()]))
@@ -185,27 +186,45 @@ def run(node, service_caller, x, y, t):
     node.new_run()
     start = time.time()
     try:
-        rotations = [0.15, -0.15]
+
+        dance_rotas = [0.30, -0.30]
 
         # idle -> ready -> running -> stopped -> ready -> ..
-
+        next_time_wait = 4
+        time_looking_away = 4
+        flip = False
         while rclpy.ok():
             id = 'auto'
 
             state = node.state
             if state == 'ready':
                 node.go()
+            if state == 'running':
+                if node.time_elapsed(seconds=next_time_wait):
+                    next_time_wait = np.random.uniform(3, 12, size=1)
+                    node.go()
             elif state == 'stopped':
                 if node.time_elapsed(seconds=0.3):
+                    flip = False
                     if 'left' in node.verbose:
-                        rotations = list(-1 * np.array(rotations))
-                    node.rotate(rotations.pop())
+                        flip = True
+                        dance_rotas = list(-1 * np.array(dance_rotas))
+                    node.rotate(dance_rotas.pop())
             elif state == 'rotating':
-                if node.time_elapsed(seconds=10):
-                    if len(rotations) != 0:
-                        node.rotate(rotations.pop())
+                if node.time_elapsed(seconds=7):
+                    if len(dance_rotas) != 0:
+                        node.rotate(dance_rotas.pop())
                     else:
-                        node.stop(reset=True)
+                        time_looking_away = 4#np.random.uniform(3, 8, size=1)
+                        look_away_omega = 0.3
+                        if flip:
+                            look_away_omega *= -1
+                        node.rotate(look_away_omega, random=True)
+            elif state == 'look_away':
+                if node.time_elapsed(seconds=time_looking_away):
+                    #node.stop(reset=True)
+                    dance_rotas = [0.30, -0.30]
+                    node.go()
             elif state == 'reset':
                 id = -1
                 if node.time_elapsed(3):

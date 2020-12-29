@@ -1,30 +1,48 @@
-import io
 import json
+import math
 import os
-from random import choice
 
-import cv2
 import numpy as np
-import torch
 from PIL import Image
 from ament_index_python import get_package_share_directory
 from elohim.poisson_disc import Grid
 from geometry_msgs.msg import Quaternion
-import math
+from scipy.spatial.distance import cdist
 
 try:  # Prioritize local src in case of PyCharm execution, no need to rebuild with colcon
     import config
 except ImportError:
     import elohim.config as config
+def generate_safe_map(spawn_area = 16, step = 4, limit = 2, num_obs=500):
 
+    # Safe internal spawn coordinates
+    ls = np.linspace(0, spawn_area, int(2 * spawn_area / step) + 1) - spawn_area / 2
+    spawn_coords = np.stack(np.meshgrid(ls[limit:-limit], ls[limit:-limit])).reshape([2, -1]).T
 
-def generate_map(seed, density=1, threshold=1, spawn_area=20, step=5):
+    # Obstacle coordinates
+    ls = np.linspace(0, spawn_area, int(np.sqrt(num_obs))+1)
+    a = np.stack(np.meshgrid(ls, ls)).reshape([2, -1]).T
+    a = a + np.random.normal(0, 0.2, size=a.shape)
+    a -= spawn_area /2
+
+    # Remove obstacles too close too spawns
+    d = cdist(spawn_coords, a)
+    mask = np.min(d, axis=0) < 0.4
+    a = a[~mask]
+
+    # Remove obstacles too close to each other
+    d = cdist(a, a)+np.eye(a.shape[0])
+    mask = np.min(d, axis=0) < 0.15
+    targets = a[~mask]
+
+    print(len(targets),num_obs)
+    return spawn_coords, targets
+
+def generate_map(seed, density=1, threshold=1, spawn_area=20, step=5, limit = 2):
     np.random.seed(seed)
 
-    spawn_coords = np.stack(np.meshgrid(
-        np.linspace(0, spawn_area, int(2 * spawn_area / step) + 1),
-        np.linspace(0, spawn_area, int(2 * spawn_area / step) + 1)
-    )).reshape([2, -1]).T
+    ls = np.linspace(0, spawn_area, int(2 * spawn_area / step) + 1)
+    spawn_coords = np.stack(np.meshgrid(ls[limit:-limit], ls[limit:-limit])).reshape([2, -1]).T
 
     n_targets = int(len(spawn_coords) * density)
 

@@ -325,14 +325,6 @@ def main(args=None):
 
                 df.to_hdf(f'{dir.path}/unified.h5', key='df', mode='w')
 
-            # Select a random window of n sec for a preview video
-            path = f"{dir.path}/preview.mp4"
-            # if not os.path.exists(path):
-            Animator(df.reset_index(), targets, save_path=path, rate=30, frames=None)
-            subprocess.run(['/Applications/mpv.app/Contents/MacOS/mpv', '--loop-file', 'yes', path],
-                           capture_output=True)
-            break
-
     except FileNotFoundError:
         print(f"Cannot find points.json file (at {os.path.dirname(points_file)})")
         print("Have you set up your environment at least once after your latest clean rebuild?"

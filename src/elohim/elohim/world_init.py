@@ -9,7 +9,7 @@ from std_srvs.srv import Empty
 
 try:  # Prioritize local src in case of PyCharm execution, no need to rebuild with colcon
     from service_utils import SyncServiceCaller, AsyncServiceCall, AsyncServiceCaller
-    from utils_ros import get_resource, generate_map, euler_to_quaternion
+    from utils_ros import get_resource, generate_map, euler_to_quaternion, generate_safe_map
     import config
 except ImportError:
     from elohim.service_utils import SyncServiceCaller, AsyncServiceCall, AsyncServiceCaller
@@ -55,9 +55,8 @@ def main(args=None):
 
     np.random.seed(config.poisson_generation_seed)
     print('Calculating obstacles..')
-    _, targets = generate_map(config.poisson_generation_seed, density=config.poisson_disc_density,
-                              threshold=config.poisson_disc_dist_threshold,
-                              spawn_area=config.plane_side, step=config.spawn_dist_step)
+    _, targets = generate_safe_map()
+    print(f'Placing {len(targets)} obstacles..')
     for i, (x, y) in enumerate(targets):
         id = f"{target}{i}"
         theta = np.random.uniform(0, np.pi * 2)
