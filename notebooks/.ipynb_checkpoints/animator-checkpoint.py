@@ -27,7 +27,7 @@ from scipy.stats import stats
 from tables import PerformanceWarning
 
 try:  # Prioritize local src in case of PyCharm execution, no need to rebuild with colcon
-    from utils import cv_from_binary, ROBOT_GEOMETRY_SIMPLE, print_full, mktransf, COORDS
+    from utils_ros import cv_from_binary, ROBOT_GEOMETRY_SIMPLE, print_full, mktransf, COORDS
     import config
 except ImportError:
     from elohim.utils import cv_from_binary, ROBOT_GEOMETRY_SIMPLE, print_full, mktransf, COORDS

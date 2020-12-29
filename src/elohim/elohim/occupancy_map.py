@@ -3,7 +3,7 @@ import pandas as pd
 from scipy import stats
 
 from config import occupancy_map_shape
-from utils import mktransf, ROBOT_GEOMETRY_SIMPLE
+from utils_ros import mktransf, ROBOT_GEOMETRY_SIMPLE
 
 
 def get_map(rel_transform, sensor_readings, robot_geometry, coords, delta):

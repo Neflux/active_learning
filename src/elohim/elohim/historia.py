@@ -19,7 +19,7 @@ from std_msgs.msg import Int64, Float64
 from tables import PerformanceWarning
 
 try:  # Prioritize local src in case of PyCharm execution, no need to rebuild with colcon
-    from utils import binary_from_cv, quaternion_to_euler
+    from utils_ros import binary_from_cv, quaternion_to_euler
 except ImportError:
     from elohim.utils import binary_from_cv, quaternion_to_euler
 

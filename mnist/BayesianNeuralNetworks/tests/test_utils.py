@@ -1,4 +1,3 @@
-import pytest
 from bnn.utils import *
 from collections.abc import Iterable
 

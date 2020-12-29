@@ -109,9 +109,11 @@ for epoch in epochs_logger:
         optimizer.step()
 
         agg_preds = torch.stack(preds, dim=0).prod(dim=0)
+        entropy = entropy_function(agg_preds)
+
         logits = agg_preds.argmax(dim=-1)
         accuracy = (logits == y).float().mean()
-        entropy = entropy_function(agg_preds)
+
 
         running_acc.append(accuracy.item())
         running_ent.append(entropy.item())

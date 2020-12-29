@@ -5,7 +5,7 @@ from torch.nn import init
 from torch.distributions import Normal
 from torch.nn.parameter import Parameter
 from torch.distributions.kl import kl_divergence
-from torch import zeros_like, ones_like, full_like, Size
+from torch import zeros_like, ones_like, full_like
 
 
 def allclose(x, y, tol=1e-5):

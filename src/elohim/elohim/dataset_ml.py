@@ -1,4 +1,9 @@
+import glob
 import os
+import random
+import time
+
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
@@ -6,22 +11,34 @@ import torch
 from torch.utils.data import DataLoader
 from torch.utils.data.dataset import Dataset
 from torchvision.transforms import transforms
+from tqdm import tqdm
 
 from utils import cv_from_binary, _moveaxis
+from torchvision.transforms import functional as F
 
+def transform_function(resize=False):
+    # np.ndarray of C x H x W to PIL Image
+    torchvision_transforms = [transforms.ToPILImage()]
 
-def transform(x):
-    x = cv_from_binary(x)
-    # x = np.moveaxis(x,-1,0)
+    # Bayesian is lighter with this trick
+    if resize:
+        # Half of the original size
+        torchvision_transforms.append(transforms.Resize(120))
+    to_pil = transforms.Compose(torchvision_transforms)
 
-    # Images of shape (3 x H x W), where H and W are expected to be at least 224
-    mobilenet_v2_format = transforms.Compose([
-        # transforms.ToPILImage(), # Tensor of shape C x H x W or a numpy ndarray of shape H x W x C
-        # transforms.Resize(256),transforms.CenterCrop(224),
-        transforms.ToTensor(),
+    to_tensor = transforms.Compose([
+        transforms.ToTensor(),  # outputs a (C x H x W) in the range [0.0, 1.0]
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
-    return mobilenet_v2_format(x)
+
+    def transform(x, flip):
+        x = cv_from_binary(x)  # outputs (240, 320, 3)
+        x = to_pil(x)
+        if flip:
+            x = F.hflip(x)
+        return to_tensor(x)
+
+    return transform
 
 
 class ConvDataset(Dataset):
@@ -38,50 +55,51 @@ class ConvDataset(Dataset):
     def __getitem__(self, i):
         data = self.X[i]
 
-        if self.transform is not None:
-            data = self.transform(data)
+        horizontal_flip = random.random() < 0.5
+        data = self.transform(data, horizontal_flip)
 
-        if self.y is not None:
-            return data, self.y[i]
-        else:
-            return data
-
-
-def get_dataset(dataset, tr_val_split, batch_size, dataset_max_size=None):
-    cd = ConvDataset(dataset['image'], labels=dataset['target_map'], transform=transform)
-
-    if dataset_max_size is not None and len(cd) > dataset_max_size:
-        print(f'Dataset size reduced ({len(cd)} -> ({dataset_max_size}))')
-        cd = torch.utils.data.dataset.Subset(cd, range(0, dataset_max_size))
-    else:
-        print(f'Warning: dataset is already smaller than {dataset_max_size}')
-
-    train_val = [int(len(cd) * x) for x in tr_val_split]  # train, val
-    train_val += [len(cd) - sum(train_val)]  # test
-    train_loader, val_loader, test_loader = [DataLoader(x, batch_size=batch_size, shuffle=shuffle) for x, shuffle in
-                                             zip(torch.utils.data.dataset.random_split(cd, train_val),
-                                                 [True, False, False])]
-    print('Batches per split:', ','.join([str(len(x)) for x in [train_loader, val_loader, test_loader]]))
-    print('Dataset, x,y shapes: ', ','.join([str(list(X.shape)) for X in next(iter(train_loader))]))
-    return train_loader, val_loader, test_loader
+        desired_output = self.y[i]
+        if horizontal_flip:
+            desired_output = torch.flip(torch.reshape(desired_output, shape=(20, 20)), dims=[0]).flatten()
+        return data, desired_output
 
 
-if __name__ == '__main__':
+def get_dataset(d_path, batch_size=8, keep=1., resize=False, test_only=False):
+    other_files = glob.glob(os.path.join(d_path, '*.pkl'))
 
-    dataset = None
-    for d in sorted(os.scandir('history'), key=lambda x: x.path, reverse=True):
-        data_path = os.path.join(d.path, 'dataset.pkl')
-        if os.path.exists(data_path):
-            print(f'The most recent simulation folder has been selected "{d.path}":')
-            df = pd.read_pickle(data_path)
-            dataset = df.loc[~df['out_of_map'], ['image', 'target_map']]
-            dataset.head()
-            break
-    assert dataset is not None
+    sorted_sets = ['test']
+    if not test_only:
+        sorted_sets = ['train', 'valid'] + sorted_sets
 
-    batch_size = 16
-    train_loader, val_loader, test_loader = get_dataset(dataset=dataset, tr_val_split=[0.8, 0.1],
-                                                        batch_size=batch_size)
+    assert set(sorted_sets) <= set([os.path.basename(x)[:-4] for x in other_files])
+
+    # print('Loading dataset, this could take a while.. ')
+    # start = time.time()
+
+    dfs = [pd.read_pickle(os.path.join(d_path, f'{x}.pkl'))
+           for x in tqdm(sorted_sets, desc='Loading splits pickles into memory')]
+    cds = [ConvDataset(df['image'].iloc[:int(len(df) * keep)], labels=df['target_map'].iloc[:int(len(df) * keep)],
+                       transform=transform_function(resize)) for df in dfs]
+    loaders = [DataLoader(cd, batch_size=batch_size, shuffle=shuffle) for cd, shuffle in zip(cds, [True, False, False])]
+
+    # print(f'Datased loaded ({time.time() - start:2.2f}s)')
+
+    print('Batches per split:', ','.join([str(len(x)) for x in loaders]))
+    print('Datasets x,y shapes', ','.join([str(list(X.shape)) for X in next(iter(loaders[0]))]))
+
+    # Return torch loaders and full testing Dataframe for videos
+    if len(loaders) == 1:
+        loaders = loaders[0]
+    return loaders, dfs[-1]
+
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Train the convolutional network')
+    parser.add_argument('--dataset', '-d', metavar='.pkl', dest='d_path', help='Directory with pickles', required=True)
+    args = parser.parse_args()
+    (train_loader, val_loader, test_loader), test_dataset = get_dataset(args.d_path, batch_size=16)
 
     fig, axs = plt.subplots(2, 1, figsize=(5, 8))
     for X, y in train_loader:
@@ -101,3 +119,7 @@ if __name__ == '__main__':
         break
     plt.show()
     print(f'Total train batches: {len(train_loader)}')
+
+
+if __name__ == '__main__':
+    main()

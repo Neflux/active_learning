@@ -9,11 +9,11 @@ from std_srvs.srv import Empty
 
 try:  # Prioritize local src in case of PyCharm execution, no need to rebuild with colcon
     from service_utils import SyncServiceCaller, AsyncServiceCall, AsyncServiceCaller
-    from utils import get_resource, generate_map, euler_to_quaternion
+    from utils_ros import get_resource, generate_map, euler_to_quaternion
     import config
 except ImportError:
     from elohim.service_utils import SyncServiceCaller, AsyncServiceCall, AsyncServiceCaller
-    from elohim.utils import get_resource, generate_map, euler_to_quaternion
+    from elohim.utils_ros import get_resource, generate_map, euler_to_quaternion
     import elohim.config as config
 
 

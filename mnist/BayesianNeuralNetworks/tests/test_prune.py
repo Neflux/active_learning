@@ -1,5 +1,4 @@
 import torch
-import pytest
 from bnn.prune import *
 from bnn.utils import *
 

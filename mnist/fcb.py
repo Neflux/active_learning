@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 
 import torch.optim as optim
 import torch.nn as tnn
-import torch.nn.functional as F
 
 import bnn.nn as nn
 

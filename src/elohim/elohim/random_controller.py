@@ -19,7 +19,7 @@ from std_msgs.msg import Int64, Float64
 
 try:  # Prioritize local src in case of PyCharm execution, no need to rebuild with colcon
     from service_utils import SyncServiceCaller
-    from utils import euler_to_quaternion, random_PIL, maxcppfloat, mypause
+    from utils_ros import euler_to_quaternion, random_PIL, maxcppfloat, mypause
     import config
 except ImportError:
     from elohim.service_utils import SyncServiceCaller
@@ -211,8 +211,6 @@ def run(node, service_caller, x, y, t):
                 if node.time_elapsed(3):
                     print(f'\rExit status: {node.verbose} - Time: {time.time() - start:.2f}s')
                     break
-                    import torchvision.models
-
 
             node.broadcast_run_id(id=id)
             rclpy.spin_once(node, timeout_sec=0.)

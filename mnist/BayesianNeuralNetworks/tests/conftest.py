@@ -1,10 +1,7 @@
-import math
 import torch
 import pytest
 from bnn.nn import *
 from torch import Size
-from bnn.prune import *
-from bnn.utils import *
 from torch.distributions import Normal
 
 
