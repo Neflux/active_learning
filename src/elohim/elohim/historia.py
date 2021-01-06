@@ -2,6 +2,7 @@ import os
 import time
 import warnings
 from collections import defaultdict
+from copy import copy
 from functools import partial
 from pathlib import Path
 from shutil import copyfile
@@ -18,13 +19,21 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import Int64, Float64
 from tables import PerformanceWarning
 
+from config import SENSORS
+
 try:  # Prioritize local src in case of PyCharm execution, no need to rebuild with colcon
-    from utils_ros import binary_from_cv, quaternion_to_euler
+    from utils_ros import quaternion_to_euler
+    from utils import binary_from_cv
 except ImportError:
-    from elohim.utils import binary_from_cv, quaternion_to_euler
+    from elohim.utils_ros import quaternion_to_euler
+    from elohim.utils import binary_from_cv
 
 # get_time = lambda node: time.time()
 get_time = lambda node: node.get_clock().now().nanoseconds
+
+
+class DatasetTooBig(Exception):
+    pass
 
 
 class Recorder(Node):
@@ -92,8 +101,9 @@ class Recorder(Node):
                                                                    v['clean_topic'].replace('/', '_') + '.h5')
             min_itemsize = v.pop('min_itemsize', {})
 
-            #self.topics[k]['store'] = store = pd.HDFStore(file_path)
-            self.create_subscription(v['type'], topic, partial(self.process_row, v["simplify"], k, file_path, min_itemsize),
+            # self.topics[k]['store'] = store = pd.HDFStore(file_path)
+            self.create_subscription(v['type'], topic,
+                                     partial(self.process_row, v["simplify"], k, file_path, min_itemsize),
                                      qos, callback_group=group)
 
             self.should_save[k] = False
@@ -105,17 +115,18 @@ class Recorder(Node):
                                          max_rate, callback_group=group)
 
         print("Subscription setup:\t\n" + ','.join(k for k in self.topics.keys()))
-        #self.create_timer(30, partial(self.display_summary, simple=True))
+        # self.create_timer(30, partial(self.display_summary, simple=True))
 
     def change_listener(self, simplify, target, msg):
         current_value = simplify(msg)['run']
 
         if current_value != self.last_value and current_value == target:
-            #print(f'SHOULD NOW SAVE ({self.last_value} -> {current_value})')
-            #print('Saving files: ', end='')
+            # print(f'SHOULD NOW SAVE ({self.last_value} -> {current_value})')
+            # print('Saving files: ', end='')
             self.should_save.update({k: True for k in self.topics.keys()})
         if self.last_value == target and current_value != target:
-            self.display_summary(simple=True)
+            if self.display_summary(simple=True):
+                raise DatasetTooBig
 
         self.last_value = current_value
 
@@ -136,7 +147,7 @@ class Recorder(Node):
         if self.should_save[key] and len(lst) > 0:
             df = pd.DataFrame(lst).drop_duplicates('time').set_index(
                 'time')  # TODO: no race condition, no artifacts?
-            start = time.time()
+            #start = time.time()
             # with warnings.catch_warnings():
             #     warnings.filterwarnings("ignore", category=PerformanceWarning)
             #
@@ -156,10 +167,13 @@ class Recorder(Node):
     def display_summary(self, simple=False):
         """ Displays a quick summaries of the files that have been created so far and their sizes """
         # print(self.topics['run_counter']['store'].info())
+
         output = ''
         if simple:
             sum_bytes = sum([os.path.getsize(v["file_path"])
                              for v in self.topics.values() if os.path.exists(v["file_path"])])
+            if sum_bytes / 1000000000 > 5:
+                return True
             output = f'\rFiles total size: {sum_bytes / 1000000.:.2f} MB'
         else:
             longest_topic_name = max([len(k) for k, _ in self.topics.items()])
@@ -169,7 +183,10 @@ class Recorder(Node):
             if len(file_size_summary) > 0:
                 output = '\nFiles:\n' + '\n'.join(file_size_summary)
         if output != '':
-            print(output, end='')# + str(' '*(100-len(output))))
+            print(output, end='')  # + str(' '*(100-len(output))))
+
+        return False
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -183,22 +200,22 @@ def main(args=None):
     compress = lambda msg: {'image': binary_from_cv(bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough'),
                                                     jpeg_quality=50)}
 
-    recorder = Recorder(rclpy, target_node='random_controller',
-                        topics={'odom': {'type': Odometry, 'qos': 20, 'simplify': odom},
-                                'ground_truth/odom': {'type': Odometry, 'qos': 10, 'reliability': best_effort,
-                                                      'simplify': odom},
-                                'head_camera/image_raw': {'type': Image, 'qos': 30, 'reliability': best_effort,
-                                                          'simplify': compress,
-                                                          'min_itemsize': {'image': 20000}},
-                                'virtual_sensor/signal': {'type': Float64, 'qos': 30,
-                                                          'simplify': lambda msg: {'sensor': msg.data}},
-                                'run_counter': {'type': Int64, 'qos': 30,
-                                                'simplify': lambda msg: {'run': msg.data}}},
+    topics = {'odom': {'type': Odometry, 'qos': 20, 'simplify': odom},
+              'ground_truth/odom': {'type': Odometry, 'qos': 10, 'reliability': best_effort, 'simplify': odom},
+              'head_camera/image_raw': {'type': Image, 'qos': 30, 'reliability': best_effort, 'simplify': compress,
+                                        'min_itemsize': {'image': 20000}},
+              'run_counter': {'type': Int64, 'qos': 30, 'simplify': lambda msg: {'run': msg.data}}}
+    for s in SENSORS:
+        topics[f'virtual_sensor/{s}'] = {'type': Float64, 'qos': 30, 'simplify': lambda msg, s=s: {s: msg.data}}
+
+    recorder = Recorder(rclpy, target_node='random_controller', topics=topics,
                         save_topic={'name': 'run_counter', 'save_value': -1})
     try:
         rclpy.spin(recorder)
     except KeyboardInterrupt:
         print("\nRecording stopped")
+    except DatasetTooBig:
+        print("\nDataset is big enough, stopping")
     finally:
         recorder.display_summary()
         recorder.destroy_node()

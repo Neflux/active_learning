@@ -50,7 +50,7 @@ class RandomController(Node):
         self.ref_time = None
         self.state = 'idle'
 
-        # self.debug_radar = {k: np.inf for k in self.SENSORS}
+        self.radar = {k: 0.15 for k in self.SENSORS}
 
         best_effort = rclpy.qos.QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT
         self.qos = rclpy.qos.QoSProfile(depth=self.raw_rate, reliability=best_effort)
@@ -58,7 +58,10 @@ class RandomController(Node):
         # Subscribers and publishers
 
         self.twist_publisher = self.create_publisher(Twist, f'/{thymio_name}/cmd_vel', qos_profile=self.raw_rate)
-        self.signal_pub = self.create_publisher(Float64, f'/{thymio_name}/virtual_sensor/signal', qos_profile=60)
+        self.signal_pub = {}
+        for sensor in self.SENSORS:
+            self.signal_pub[sensor] = self.create_publisher(Float64, f'/{thymio_name}/virtual_sensor/{sensor}',
+                                                            qos_profile=60)
         self.run_counter_pub = self.create_publisher(Int64, f'/{thymio_name}/run_counter', qos_profile=60)
 
         self.sensor_subs, self.odom_sub = [], None
@@ -99,17 +102,17 @@ class RandomController(Node):
             self.unsubscribe()
         self.twist_publisher.publish(self.STOP_TWIST)
 
-    def rotate(self, rotation, random=False):
+    def rotate(self, rotation):
         """ Updates internal state and sets Thymio twist to the specified rotation value
         @param rotation: the yaw (z-axis) rotation speed in radians per second
         """
-        self.update_state('look_away' if random else 'rotating')
+        self.update_state('rotating')
         # self.twist_publisher.publish(self.TURN_LEFT if rotation > 0 else self.TURN_RIGHT)
         self.twist_publisher.publish(Twist(angular=Vector3(z=rotation)))
 
     def update_state(self, state):
         """ Updates internal state with specified str """
-        print(f'\rStatus: {state}', end='')
+        print(f'\r[Run {self.run_counter}] Status: {state}', end='')
         self.state = state
 
     def reset(self, msg, reset=False):
@@ -143,21 +146,16 @@ class RandomController(Node):
         # self.debug_radar = {k: np.inf for k in self.SENSORS}
 
     def sensor_callback(self, key, msg):
-        r = msg.range if msg.range < 0.15 else np.inf
-        if r > config.minimum_valid_threshold:
-            # self.debug_radar[key] = r
-            # print(' '.join([f'{v:.2f}' for v in self.debug_radar.values()]))
-            # if r < config.active_signal_threshold and key == 'center':
-            #     signal = msg.range
-
-            if r < config.obstacle_dist_threshold:
-                if self.state == 'running':
-                    self.reset(f'\'{key}\' sensor detected an object ({r:.6f})', reset=False)
-
-            if key == 'center':
-                self.signal_pub.publish(Float64(data=min(r, config.max_sensor_threshold)))
-        elif key == 'center':
-            self.signal_pub.publish(Float64(data=config.max_sensor_threshold))
+        r = min(msg.range if msg.range > config.minimum_valid_threshold else config.max_sensing_distance,
+                config.max_sensing_distance)
+        self.radar[key] = r
+        # print(' '.join([f'{v:.2f}' for v in self.debug_radar.values()]))
+        # if r < config.active_signal_threshold and key == 'center':
+        #     signal = msg.range
+        if r < config.obstacle_dist_threshold:
+            if self.state == 'running':
+                self.reset(f'\'{key}\' sensor detected an object ({r:.6f})', reset=False)
+        self.signal_pub[key].publish(Float64(data=r))
 
     def pose_callback(self, msg):
         pos = msg.pose.pose.position
@@ -165,6 +163,8 @@ class RandomController(Node):
         if abs(pos.x) > self.plane_side or abs(pos.y) > self.plane_side:
             self.reset(f'{self.robot_name} out of map ({pos.x:.2f},{pos.y:.2f})', reset=True)
 
+    def obstacle_nearby(self):
+        return any([x < config.max_sensing_distance for x in self.radar.values()])
 
 def run(node, service_caller, x, y, t):
     """
@@ -181,55 +181,42 @@ def run(node, service_caller, x, y, t):
     es = EntityState(name=node.robot_name)
     es.pose = Pose(position=Point(x=x, y=y), orientation=euler_to_quaternion(yaw=t))
     sc = service_caller(srv=SetEntityState, srv_namespace="ros_state/set_entity_state", request_dict={"state": es})
-    print(f"[Run {str(node.run_counter).rjust(2)}]: Thymio teleported to (x:{x:.2f}, y:{y:.2f}, t:{t:.2f})")
+    print(f"Thymio teleported to (x:{x:.2f}, y:{y:.2f}, t:{t:.2f})")
 
     node.new_run()
     start = time.time()
     try:
-
-        dance_rotas = [0.30, -0.30]
-
         # idle -> ready -> running -> stopped -> ready -> ..
-        next_time_wait = 4
-        time_looking_away = 4
-        flip = False
+        next_time_wait = np.random.uniform(3, 12, size=1)
+        time_looking_away = np.random.uniform(1, 16, size=1)
+        node.go()
         while rclpy.ok():
             id = 'auto'
 
             state = node.state
-            if state == 'ready':
-                node.go()
             if state == 'running':
                 if node.time_elapsed(seconds=next_time_wait):
                     next_time_wait = np.random.uniform(3, 12, size=1)
                     node.go()
             elif state == 'stopped':
                 if node.time_elapsed(seconds=0.3):
-                    flip = False
-                    if 'left' in node.verbose:
-                        flip = True
-                        dance_rotas = list(-1 * np.array(dance_rotas))
-                    node.rotate(dance_rotas.pop())
+                    angular_vel = 0.3
+                    if 'right' in node.verbose:
+                        angular_vel *= -1
+                    node.rotate(angular_vel)
             elif state == 'rotating':
-                if node.time_elapsed(seconds=7):
-                    if len(dance_rotas) != 0:
-                        node.rotate(dance_rotas.pop())
-                    else:
-                        time_looking_away = 4#np.random.uniform(3, 8, size=1)
-                        look_away_omega = 0.3
-                        if flip:
-                            look_away_omega *= -1
-                        node.rotate(look_away_omega, random=True)
-            elif state == 'look_away':
-                if node.time_elapsed(seconds=time_looking_away):
-                    #node.stop(reset=True)
-                    dance_rotas = [0.30, -0.30]
-                    node.go()
+                if not node.obstacle_nearby():
+                    if node.time_elapsed(seconds=time_looking_away):
+                        time_looking_away = np.random.uniform(1, 16, size=1)
+                        node.stop(reset=True)
             elif state == 'reset':
                 id = -1
-                if node.time_elapsed(3):
-                    print(f'\rExit status: {node.verbose} - Time: {time.time() - start:.2f}s')
-                    break
+                if node.time_elapsed(0.5):
+                    if 'out of map' in node.verbose:
+                        print(f'\rExit status: {node.verbose} - Time: {time.time() - start:.2f}s')
+                        break
+                    node.new_run()
+                    node.go()
 
             node.broadcast_run_id(id=id)
             rclpy.spin_once(node, timeout_sec=0.)
@@ -240,10 +227,8 @@ def run(node, service_caller, x, y, t):
         return -1
     return 1
 
-
 parser = argparse.ArgumentParser(description='Process some integers.', prefix_chars='@')
 parser.add_argument('@@s', nargs=3, help="x,y,t", type=float, default=None)
-
 
 def main(args=None):
     rclpy.init(args=args)

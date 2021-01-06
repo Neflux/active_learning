@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 import torchvision
 from torch.hub import load_state_dict_from_url
@@ -21,7 +22,7 @@ def recover_weights(model_dict):
                        k in model_dict and v.shape == model_dict[k].shape}
 
     model_dict.update(pretrained_dict)
-    print('Keys recovered from the pretrained model state that are still compatible:', len(pretrained_dict))
+    #print('Keys recovered from the pretrained model state that are still compatible:', len(pretrained_dict))
     return model_dict
 
 
@@ -55,11 +56,12 @@ class ConvNet(torchvision.models.MobileNetV2):
         # Redefine last convolutional block of the original architechture
         # In this way, we can control the output channels, they are the input channels of our extra convolution
         last_conv_in = _make_divisible(inverted_residual_setting[-1][1] * width_mult, round_nearest)
+        #print(last_conv_in)
         self.features[-1] = torchvision.models.mobilenet.ConvBNReLU(last_conv_in, last_conv_in * 2, kernel_size=1)
 
         # Whether we want a bayesian network or not, append the proper layer type to 'features'
         study_layer = nn.Conv2d(last_conv_in * 2, last_conv_in * 4, 3, 1, 1, bias=False)
-        self.features.add_module('extra', study_layer)
+        self.features.add_module('study', study_layer)
 
         # Redefine 'classifier' block at end of the network
         # In this way, we can control the input channels, they are the output channels of our extra convolution
@@ -123,6 +125,7 @@ class BayesConvNet(bnn_layers.BayesianNetworkModule, torchvision.models.MobileNe
 
 if __name__ == '__main__':
     from torchsummary import summary
+    import hiddenlayer as hl
 
     common_parameters = {'num_classes': 400, 'mode': 'softmax'}
 
@@ -135,8 +138,13 @@ if __name__ == '__main__':
            [6, 64, 2, 2],
            [6, 96, 1, 1]]
     model = ConvNet(irs, **common_parameters)
+    model.eval()
     print('Total model parameters:', sum(p.numel() for p in model.parameters()))
     summary(model, (3, 240, 320))
+
+
+    #g = hl.build_graph(model, torch.zeros([1, 3, 240, 320])).build_dot()
+    #g.view()
     # print(model(torch.randn(1, 3, 240, 320)).shape)
 
     # t, c, n, s
@@ -147,3 +155,4 @@ if __name__ == '__main__':
     model = BayesConvNet(irs, samples=1, **common_parameters)
     print('Total model parameters:', sum(p.numel() for p in model.parameters()))
     summary(model, (3, 120, 160))
+    print(model)

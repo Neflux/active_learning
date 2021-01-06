@@ -75,7 +75,7 @@ class ServiceTimeoutException(Exception):
 class AsyncServiceCall(Node):
     def __init__(self, srv, srv_namespace, request_dict=None, id=''):
 
-        id = 'minimal_client_async' + id
+        id = 'minimal_client_async__' + id
         super().__init__(id)
 
         self.cli = self.create_client(srv, srv_namespace)

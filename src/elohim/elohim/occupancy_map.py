@@ -3,7 +3,7 @@ import pandas as pd
 from scipy import stats
 
 from config import occupancy_map_shape
-from utils_ros import mktransf, ROBOT_GEOMETRY_SIMPLE
+from utils import mktransf, ROBOT_GEOMETRY_FULL
 
 
 def get_map(rel_transform, sensor_readings, robot_geometry, coords, delta):
@@ -44,7 +44,7 @@ def get_map(rel_transform, sensor_readings, robot_geometry, coords, delta):
     closer_than_delta = distances <= delta
     icoords, isens = np.where(closer_than_delta)
     # note: 0.11 is the maximum distance of a detected obstacle
-    occupancy_map[icoords] = sensor_readings[isens] < 0.11
+    occupancy_map[icoords] = sensor_readings[isens] < 0.12
 
     return occupancy_map
 
@@ -101,19 +101,18 @@ def compute_occupancy_map(row, df, coords, target_columns, interval, delta):
     cols = [f'ground_truth_odom_{axis}' for axis in ['x', 'y', 'theta']]
     other_poses = window[cols].values
     other_transforms = np.stack([mktransf(pose) for pose in other_poses])
-    inverse_frame = np.linalg.inv(
-        mktransf(row[cols].values))
+    inverse_frame = np.linalg.inv(mktransf(row[cols].values))
     rel_transforms = np.matmul(inverse_frame, other_transforms)
 
     sensor_readings = window[target_columns].values
 
     # compute occupancy maps (one map per relative transformation)
-    maps = [get_map(trans, reading, ROBOT_GEOMETRY_SIMPLE, coords, delta)
+    maps = [get_map(trans, reading, ROBOT_GEOMETRY_FULL, coords, delta)
             for trans, reading in zip(rel_transforms, sensor_readings)]
 
     # aggregate occupancy maps
-    occupancy_map = np.flip(aggregate(np.array(maps)).reshape(occupancy_map_shape), axis=0).flatten()
-    return pd.Series({'target_map': occupancy_map})
+    occupancy_map = np.rot90(np.flip(aggregate(np.array(maps)).reshape(occupancy_map_shape), axis=0)).flatten()
+    return pd.Series({'target_map': occupancy_map})#, maps
 
 
 def compute_occupancy_maps(df, coords, target_columns, interval='1s', delta=0.01):
@@ -125,7 +124,6 @@ def compute_occupancy_maps(df, coords, target_columns, interval='1s', delta=0.01
             target_columns: a list of columns containing sensors' readings.
             interval: a time interval, expressed as string, for limiting the computation time.
             delta: the maximum distance between a sensor reading and a coord to be matched.
-
     Returns:
             The new dataframe with the added columns corresponding to an occupancy map.
     '''

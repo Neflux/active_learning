@@ -13,7 +13,8 @@ try:  # Prioritize local src in case of PyCharm execution, no need to rebuild wi
     import config
 except ImportError:
     import elohim.config as config
-def generate_safe_map(spawn_area = 16, step = 4, limit = 2, num_obs=500):
+
+def generate_safe_map(spawn_area = 20, step = 5, limit = 2, num_obs=625):
 
     # Safe internal spawn coordinates
     ls = np.linspace(0, spawn_area, int(2 * spawn_area / step) + 1) - spawn_area / 2
@@ -35,7 +36,10 @@ def generate_safe_map(spawn_area = 16, step = 4, limit = 2, num_obs=500):
     mask = np.min(d, axis=0) < 0.15
     targets = a[~mask]
 
-    print(len(targets),num_obs)
+    with open(os.path.join(get_package_share_directory('elohim'), 'points.json'), 'w') as f:
+        json.dump({"targets": [{"x": x[0], "y": x[1]} for x in targets],
+                   "spawn_coords": [{"x": x[0], "y": x[1]} for x in spawn_coords]}, f)
+
     return spawn_coords, targets
 
 def generate_map(seed, density=1, threshold=1, spawn_area=20, step=5, limit = 2):
@@ -83,14 +87,7 @@ def euler_to_quaternion(roll=0, pitch=0, yaw=0):
     return Quaternion(x=x, y=y, z=z, w=w)
 
 
-def mktransf(pose):
-    """Returns a trasnformation matrix given a (x, y, theta) pose."""
-    assert len(pose) == 3
-    cos = np.cos(pose[2])
-    sin = np.sin(pose[2])
-    return np.array([[cos, -sin, pose[0]],
-                     [sin, cos, pose[1]],
-                     [0, 0, 1]])
+
 
 
 def quaternion_to_euler(q):
@@ -121,26 +118,9 @@ def quaternion2yaw(i):
     return quaternion_to_euler(q)[2]
 
 
-ROBOT_GEOMETRY_FULL = [
-    mktransf((0.0630, 0.0493,
-              quaternion2yaw([0.0, 0.0, 0.3256, 0.9455]))),  # left
-    mktransf((0.0756, 0.0261,
-              quaternion2yaw([0.0, 0.0, 0.1650, 0.9863]))),  # center_left
-    mktransf((0.0800, 0.0000, 0.0000)),  # center
-    mktransf((0.0756, -0.0261,
-              quaternion2yaw([0.0, 0.0, -0.1650, 0.9863]))),  # center_right
-    mktransf((0.0630, -0.0493,
-              quaternion2yaw([0.0, 0.0, -0.3256, 0.9455])))  # right
-]
 
-ROBOT_GEOMETRY_SIMPLE = [
-    mktransf((0.0800, 0.0000, 0.0000)),  # center
-]
 
-COORDS = np.stack(np.meshgrid(
-    np.linspace(0, .8, int(.8 / .04)),
-    np.linspace(-.4, .4, int(.8 / .04))
-)).reshape([2, -1]).T
+
 
 
 

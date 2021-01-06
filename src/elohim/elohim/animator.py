@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-from utils import cv_from_binary
+from utils import cv_from_binary, plot_transform, scaled_full_robot_geometry, mktransf
 
 matplotlib.rcParams['axes.unicode_minus'] = False
 from matplotlib import axes, figure, transforms, animation
@@ -20,7 +20,7 @@ from matplotlib.animation import FuncAnimation
 from matplotlib.collections import LineCollection
 from matplotlib.colors import ListedColormap
 from matplotlib.lines import Line2D
-from matplotlib.patches import Polygon, Circle
+from matplotlib.patches import Polygon, Circle, Rectangle
 from scipy.spatial import distance
 from tqdm import tqdm
 
@@ -65,11 +65,11 @@ class Animator:
 
         # Cache
 
-        self.sensor_readings = df['sensor'].to_numpy()
+        # self.sensor_readings = df['sensor'].to_numpy()
         self.odom_pos_data = df[['x', 'y', 'theta']].to_numpy()
         self.gt_pos_data = df[['ground_truth_odom_x', 'ground_truth_odom_y', 'ground_truth_odom_theta']].to_numpy()
         self.images = df['image'].map(cv_from_binary).map(partial(Image.fromarray, mode="RGB")).to_numpy()
-        self.sensor_data = df['sensor'].round(3).astype(str).values
+        # self.sensor_data = df['sensor'].round(3).astype(str).values
 
         self.run_counter = df['run'].to_numpy()
         rd = df.groupby('run')['x'].count().astype(int)
@@ -124,8 +124,8 @@ class Animator:
             # else:
             #     axs.append(plt.subplot(gs[1:3, 2]))
 
-             fig, axs = plt.subplots(2, 2, figsize=(8, 8),
-                                     dpi=120)  # type:figure.Figure, List[axes.Axes]
+            fig, axs = plt.subplots(2, 2, figsize=(8, 8),
+                                    dpi=120)  # type:figure.Figure, List[axes.Axes]
         else:
             fig, axs = plt.subplots(1, 3, figsize=(12, 5),
                                     dpi=120)  # type:figure.Figure, List[axes.Axes]
@@ -157,13 +157,14 @@ class Animator:
             """ Returns a dictionary of matplotlib objects for a Thymio instance on the top-down plot """
             thymio, = ax1.plot([], [], 'o', color=color, zorder=3, ms=1.)
             sensor_radius = ax1.add_artist(Circle((0, 0), 0, fill=False, linestyle='--', alpha=0.5, linewidth=0.7))
+            square_map = ax1.add_artist(plt.Polygon([[0, 0] for _ in range(4)], closed=True, fill=None, edgecolor='r'))
             intent = ax1.add_line(Line2D([], [], linestyle='--', color='black', linewidth=1.0, alpha=0.8))
             lc1, lc2 = [ax1.add_collection(gradient_line(fovline_cmap)) for _ in range(2)]
             fov_area, clip_path = gradient_area(color)
             ax1.add_patch(clip_path)
             fov_area.set_clip_path(clip_path)
-            return {'thymio': thymio, 'sensor_radius': sensor_radius, 'intent': intent, 'lc1': lc1,
-                    'lc2': lc2, 'fov_area': fov_area, 'clip_path': clip_path}
+            return {'thymio': thymio, 'sensor_radius': sensor_radius, 'square_map': square_map, 'intent': intent,
+                    'lc1': lc1, 'lc2': lc2, 'fov_area': fov_area, 'clip_path': clip_path}
 
         self.gt_artists = thymio('blue', pl.cm.Blues_r)
         self.odom_artists = thymio('orange', pl.cm.Oranges_r)
@@ -183,8 +184,8 @@ class Animator:
         ax2.set_title("Camera view")
         ax2.axis('off')
         self.camera = ax2.imshow(self.images[0])
-        self.sensor_text = ax2.text(0.5, 0.8, s=self.sensor_data[0], weight='bold', color='white',
-                                    ha="center", va="center", size=18, transform=ax2.transAxes)
+        # self.sensor_text = ax2.text(0.5, 0.8, s=self.sensor_data[0], weight='bold', color='white',
+        #                            ha="center", va="center", size=18, transform=ax2.transAxes)
         self.run_indicator = ax2.text(0.5, -0.1, '', ha="center", va="center", color='black', transform=ax2.transAxes,
                                       fontdict={'family': 'serif', 'size': 10})
 
@@ -199,6 +200,15 @@ class Animator:
         if extra_info is not None:
             plt.suptitle(','.join([f'{k}: {v}' for k, v in extra_info.items()]))
 
+        ratio = 20 / 0.8
+        for r in scaled_full_robot_geometry(ratio):
+            plot_transform(ax3, mktransf((10 - 0.5, 20 - 0.5, -np.pi / 2)) @ r, color='white',
+                           length=config.max_sensing_distance * ratio)
+
+        ax3.plot([10 / 20, 0], [0, 0.5], linewidth=.8, linestyle='--', color='blue', transform=ax3.transAxes)
+        ax3.plot([10 / 20, 1], [0, 0.5], linewidth=.8, linestyle='--', color='blue', transform=ax3.transAxes)
+        # ax3.add_artist(plt.Circle((0.5, 0.), radius=2/20, linewidth=0.8, linestyle='-', edgecolor='none', facecolor='crimson',
+        #                          fill=False, transform=ax3.transAxes))
         """ Subplot 4 - Model prediction """
 
         self.omap_preds = None
@@ -212,8 +222,12 @@ class Animator:
             ax4.set_title('Predicted occupancy map')
             ax4.axis('off')
             self.occ_map_pred = ax4.imshow(self.omap_preds[0])
-            ax4.plot([0, 1], [9 / 20, 9 / 20], linewidth=1, linestyle='--', color='blue', transform=ax4.transAxes)
-            ax4.plot([0, 1], [11 / 20, 11 / 20], linewidth=1, linestyle='--', color='blue', transform=ax4.transAxes)
+            ax4.plot([10 / 20, 0], [0, 0.5], linewidth=1, linestyle='--', color='blue', transform=ax4.transAxes)
+            ax4.plot([10 / 20, 1], [0, 0.5], linewidth=1, linestyle='--', color='blue', transform=ax4.transAxes)
+
+            for r in scaled_full_robot_geometry(ratio):
+                plot_transform(ax4, mktransf((10 - 0.5, 20 - 0.5, -np.pi / 2)) @ r, color='white',
+                               length=config.max_sensing_distance * ratio)
 
         plt.tight_layout()
         self.anim = FuncAnimation(fig, self.animate, frames=frames, interval=1000. / rate, blit=True,
@@ -253,13 +267,13 @@ class Animator:
             artist['clip_path'].set_xy(np.empty((3, 2)))
 
         self.camera.set_data(self.images[0])
-        self.sensor_text.set_text(self.sensor_data[0])
+        # self.sensor_text.set_text(self.sensor_data[0])
 
         # self.occ_map.set_data(np.random.choice([0, 128, 255], size=config.occupancy_map_shape))
         self.occ_map.set_data(self.colored_omaps[0])
 
         artists = [*self.gt_artists.values(), *self.odom_artists.values(),
-                   self.camera, self.run_indicator, self.sensor_text,
+                   self.camera, self.run_indicator,  # self.sensor_text,
                    self.occ_map]  # *self.labels,
         if self.omap_preds is not None:
             self.occ_map_pred.set_data(self.omap_preds[0])
@@ -278,7 +292,7 @@ class Animator:
             x, y, theta = positional_data[i]
 
             artist['thymio'].set_data([x], [y])
-            artist['intent'].set_data((x, x + cos(theta)), (y, y + sin(theta)))
+            artist['intent'].set_data((x, x + cos(theta) * 0.8), (y, y + sin(theta) * 0.8))
 
             t = np.c_[[x, y], [x, y]].T + self.length * np.array([np.cos(theta + (d45 * np.array([-1, 1]))),
                                                                   np.sin(theta + (d45 * np.array([-1, 1])))]).T
@@ -299,6 +313,14 @@ class Animator:
             artist['clip_path'].set_xy(np.array([[x, y], t[0], t[1]]))
             artist['fov_area'].set_clip_path(artist['clip_path'])
 
+            artist['square_map'].set_xy([[x + cos(theta + i) * 0.4 * j, y + sin(theta + i) * 0.4 * j]
+                                         for i, j in
+                                         zip([-np.pi/2, +np.pi/2, +np.arctan(0.5),-np.arctan(0.5)], [1, 1, np.sqrt(5), np.sqrt(5)])])
+            # artist['square_map']._update_patch_transform()
+            # artist['square_map'].stale = True
+            # artist['square_map'].set_transform(matplotlib.transforms.Affine2D().rotate_deg(theta*180/np.pi+90)
+            #                                   + self.ax1.transData)
+
         self.ax1.set_xlim(x - 2, x + 2)
         self.ax1.set_ylim(y - 2, y + 2)
 
@@ -309,7 +331,7 @@ class Animator:
 
         img = self.images[i]
         self.camera.set_data(img)
-        self.sensor_text.set_text(self.sensor_data[i])
+        # self.sensor_text.set_text(self.sensor_data[i])
 
         run = self.run_counter[i]
         end = self.run_dict['end'][run]
@@ -327,7 +349,7 @@ class Animator:
         #             self.labels[k * config.occupancy_map_shape[0] + j].set_text('')
 
         artists = [*self.gt_artists.values(), *self.odom_artists.values(),
-                   self.camera, self.run_indicator, self.sensor_text,
+                   self.camera, self.run_indicator,  # self.sensor_text,
                    self.occ_map]  # *self.labels,
 
         self.occ_map.set_data(self.colored_omaps[i].astype('uint8'))

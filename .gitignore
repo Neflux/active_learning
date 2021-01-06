@@ -11,3 +11,8 @@ log/
 /history/
 
 test.urdf
+*.png
+*/*.png
+
+*/.ipynb_checkpoints/
+

@@ -4,8 +4,12 @@ from random import choice
 
 import cv2
 import numpy as np
-import torch
 import pandas as pd
+import torch
+
+
+import matplotlib.patches as mpatches
+from matplotlib.legend_handler import HandlerPatch
 
 try:  # Prioritize local src in case of PyCharm execution, no need to rebuild with colcon
     import config
@@ -80,3 +84,73 @@ def random_session_name():
 
     result = choice(colors) + '-' + choice(animals)
     return result.lower()
+
+
+def plot_transform(ax, tr, color='b', length=1, head_width=0.2):
+    origin = (tr @ np.array([0, 0, 1]))[:2]
+    xhat = (tr @ np.array([length, 0, 1]))[:2]
+    # yhat = (tr @ np.array([0, length_y, 1]))[:2]
+    ax.arrow(*origin, *(xhat - origin), head_width=head_width, color=color, zorder=3)
+
+
+def mktransf(pose):
+    """Returns a trasnformation matrix given a (x, y, theta) pose."""
+    assert len(pose) == 3
+    cos = np.cos(pose[2])
+    sin = np.sin(pose[2])
+    return np.array([[cos, -sin, pose[0]],
+                     [sin, cos, pose[1]],
+                     [0, 0, 1]])
+
+
+COORDS = np.stack(np.meshgrid(
+    np.linspace(0, .8, int(.8 / .04)),
+    np.linspace(-.4, .4, int(.8 / .04))
+)).reshape([2, -1]).T
+
+ROBOT_GEOMETRY_FULL = [
+    mktransf((0.0630, 0.0493, 0.6632885724142987)),  # left
+    mktransf((0.0756, 0.0261, 0.3315180299646234)),  # center_left
+    mktransf((0.0800, 0.0000, 0.0000)),  # center
+    mktransf((0.0756, -0.0261, -0.3315180299646234)),  # center_right
+    mktransf((0.0630, -0.0493, -0.6632885724142987))  # right
+]
+
+
+
+def scaled_full_robot_geometry(ratio):
+    return [
+        mktransf((0.0630 * ratio, 0.0493 * ratio, 0.6632885724142987)),  # left
+        mktransf((0.0756 * ratio, 0.0261 * ratio, 0.3315180299646234)),  # center_left
+        mktransf((0.0800 * ratio, 0.0000 * ratio, 0.0000)),  # center
+        mktransf((0.0756 * ratio, -0.0261 * ratio, -0.3315180299646234)),  # center_right
+        mktransf((0.0630 * ratio, -0.0493 * ratio, -0.6632885724142987))  # right
+    ]
+
+
+def make_legend_arrow(legend, orig_handle,
+                      xdescent, ydescent,
+                      width, height, fontsize):
+    p = mpatches.FancyArrow(0, 0.5 * height, width, 0, length_includes_head=True, head_width=0.75 * height)
+    return p
+
+
+class HandlerRect(HandlerPatch):
+
+    def create_artists(self, legend, orig_handle,
+                       xdescent, ydescent, width, height,
+                       fontsize, trans):
+        x = width // 2 - width // 3
+        y = 0
+        w = h = 10
+
+        # create
+        p = mpatches.Rectangle(xy=(x, y), width=w, height=h)
+
+        # update with data from oryginal object
+        self.update_prop(p, orig_handle, legend)
+
+        # move xy to legend
+        p.set_transform(trans)
+
+        return [p]

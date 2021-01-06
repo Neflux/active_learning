@@ -1,7 +1,6 @@
 import glob
 import json
 import os
-import subprocess
 import time
 import warnings
 
@@ -20,7 +19,8 @@ try:  # Prioritize local src in case of PyCharm execution, no need to rebuild wi
     from utils_ros import cv_from_binary, ROBOT_GEOMETRY_SIMPLE, print_full, mktransf, COORDS
     import config
 except ImportError:
-    from elohim.utils import cv_from_binary, ROBOT_GEOMETRY_SIMPLE, print_full, mktransf, COORDS
+    from elohim.utils import cv_from_binary, print_full
+    from elohim.utils_ros import ROBOT_GEOMETRY_SIMPLE, mktransf, COORDS
     import elohim.config as config
 
 d45 = np.pi / 4
@@ -43,6 +43,7 @@ def mergedfs(dfs, tolerance='1s'):
         # Column name formatting
         dfcols = set(df.columns)
         if len(dfcols & seen_cols) > 0:
+            print(set(df.columns), seen_cols)
             dfs[topic] = df = df.add_prefix(os.path.basename(topic)[:-3] + '_')
         seen_cols |= dfcols
 
@@ -61,7 +62,7 @@ def mergedfs(dfs, tolerance='1s'):
     # Merge on time index
     ref_df = dfs[min_topic]
     other_dfs = dfs
-    other_dfs.pop(min_topic)
+    backup = other_dfs.pop(min_topic)
     result = pd.concat(
         [ref_df] +
         [df.reindex(index=ref_df.index, method='nearest', tolerance=pd.Timedelta(tolerance).value) for _, df in
@@ -69,7 +70,7 @@ def mergedfs(dfs, tolerance='1s'):
         axis=1)
     result.dropna(inplace=True)
     result.index = pd.to_datetime(result.index)
-
+    other_dfs[min_topic] = backup
     num, den = tot_with_dupes - len(result) * (len(dfs) + 1), tot_with_dupes
     print(f'Resulting length: {len(result)}. Total discarded records: {num * 100 / den:.1f}% ({num}/{den}).')
 

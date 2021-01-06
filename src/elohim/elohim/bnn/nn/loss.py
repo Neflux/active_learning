@@ -11,7 +11,7 @@ class KLDivergence(Module):
 
     def compute_kl(self, param, module):
         return kl_divergence(
-            param.dist, module.prior
+            param.dist, module.prio
         ).mean()
 
     def forward(self, model):
