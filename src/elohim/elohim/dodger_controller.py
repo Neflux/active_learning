@@ -1,6 +1,7 @@
 import argparse
 import itertools
 import json
+import math
 import os
 import random
 import time
@@ -30,10 +31,11 @@ except ImportError:
 
 
 class DodgerControllerr(RandomController):
-    def __init__(self, model_path=None, samples=None, rotation_factor=0.6, **kwargs):
+    def __init__(self, model_path=None, samples=None, rotation_factor=0.6, drift_factor=0.1, **kwargs):
         super().__init__(**kwargs)
 
         self.k = rotation_factor
+        self.j = drift_factor
 
         best_effort = QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT
         qos = rclpy.qos.QoSProfile(depth=10, reliability=best_effort)
@@ -41,6 +43,7 @@ class DodgerControllerr(RandomController):
                                                  qos)
         self.theta = 0
         self.ref_theta = None
+        self.extended_range = np.zeros(10)
 
         if model_path is not None:
             print('This model will try to be smarter')
@@ -49,15 +52,15 @@ class DodgerControllerr(RandomController):
                 from utils import fov_mask
                 from models import flexible_weights
                 from models import initialize_model
-                from dataset_ml import transform_function
+                from dataset_ml import transform_function, to_pil, to_tensor
             except ImportError:
                 from elohim.utils import fov_mask
                 from elohim.testing import flexible_weights
                 from elohim.model import initialize_model
-                from elohim.dataset_ml import transform_function
+                from elohim.dataset_ml import transform_function, to_pil, to_tensor
 
-            self.model, _, _, device = initialize_model(samples=samples, weights_path=model_path)
-            self.model.load_state_dict(flexible_weights(model_path, device))
+            self.model, _, _, device = initialize_model(batch_size=1, samples=samples,
+                                                        weights_path=os.path.join(model_path, 'checkpoint.pt'))
             self.model.eval()
             torch.autograd.set_grad_enabled(False)
 
@@ -69,13 +72,21 @@ class DodgerControllerr(RandomController):
                                                        self.update_prediction, qos)
 
             self.mask = fov_mask()
-            self.transform = partial(transform_function(resize=samples is not None), flip=False)
-            self.extended_range = np.zeros(10)
+            self.transform = lambda x, f=to_tensor, g=to_pil: f(g(x))
+
+            self.timer = self.create_timer(1, self.unlock_prediction)
+            self.can_predict = False
+
+    def unlock_prediction(self):
+        self.can_predict = True
 
     def update_prediction(self, msg):
-        output = self.model(self.transform(self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')).unsqueeze(0))
-        output = np.where(self.mask, output[0].detach().numpy()[..., 1].reshape(20, 20), 0)
-        self.extended_range = output.sum(axis=0)
+        if self.can_predict:
+            output = self.model(
+                self.transform(self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')).unsqueeze(0))
+            output = np.where(self.mask, output[0].detach().numpy()[..., 1].reshape(20, 20), 0)
+            self.extended_range = output.sum(axis=0)
+            self.can_predict = False
 
     def update_theta(self, msg):
         self.theta = quaternion_to_euler(msg.pose.pose.orientation)[2]
@@ -93,11 +104,15 @@ class DodgerControllerr(RandomController):
         """ Updates internal state and sets Thymio velocity to cruising speed on its forward axis (x) """
         self.update_state('running')
 
-        angle_diff = (target_theta - self.theta)
-        angle_diff = angle_diff + (np.pi * 2 * np.sign(angle_diff)) if abs(angle_diff) > np.pi else angle_diff
+        angle_diff = min(target_theta - self.theta,
+                         target_theta - self.theta + 2 * math.pi,
+                         target_theta - self.theta - 2 * math.pi,
+                         key=abs)
 
-
-        omega = np.clip(float(self.k * angle_diff), -0.5, 0.5)
+        drift = self.extended_range[10:].sum() - self.extended_range[:10].sum()
+        omega = np.clip(float(self.k * angle_diff + self.j * drift), -0.5, 0.5)
+        # -0.50 -1.1e+01 -2.141593 2.156940
+        print(f'\r{omega:2.2f} {angle_diff:2.2} {target_theta:2.6f} {self.theta:2.6f}', end='')
         # print(f'\r{self.theta:2.2f}, {target_theta:2.2f}, {omega:2.2f}', end='')
         self.twist_publisher.publish(Twist(linear=Vector3(x=config.forward_velocity),
                                            angular=Vector3(z=omega)))
@@ -118,10 +133,12 @@ def run(node, service_caller, x, y, t, tt):
     es = EntityState(name=node.robot_name)
     es.pose = Pose(position=Point(x=x, y=y), orientation=euler_to_quaternion(yaw=t))
     service_caller(srv=SetEntityState, srv_namespace="ros_state/set_entity_state", request_dict={"state": es})
-    print(f"Thymio teleported to (x:{x:.2f}, y:{y:.2f}, t:{t:.2f})")
+    print(f"Thymio teleported to (x:{x:.2f}, y:{y:.2f}, t:{t:.2f}), target yaw: {tt:2.2f}")
 
     node.new_run()
     start = time.time()
+
+
     try:
         node.smart_go(tt)
         while rclpy.ok():
@@ -158,8 +175,8 @@ def run(node, service_caller, x, y, t, tt):
 
 
 parser = argparse.ArgumentParser(description='Process some integers.', prefix_chars='@')
-parser.add_argument('@@spawn', '@s', nargs=3, help="x,y,t", type=float, default=None)
-parser.add_argument('@@model', '@m', metavar='path', dest='o_path', required=True,
+parser.add_argument('@@spawn@coordinates', '@sc', nargs=3, help="x,y,t", dest='s', type=float, default=None)
+parser.add_argument('@@model', '@m', metavar='path', dest='model', required=False,
                     help='Folder containing model checkpoint')
 parser.add_argument('@@samples', '@s', dest='samples', type=int,
                     help='Number of samples for the bayesian network (ensemble)')
@@ -168,42 +185,24 @@ parser.add_argument('@@samples', '@s', dest='samples', type=int,
 def main(args=None):
     rclpy.init(args=args)
 
-    args = ['@s', '0.0', '0.0', '0.0']
+    # args = ['@sc', '0.0', '0.0', '0.0']
     args = parser.parse_args(args)
-
-    points_file = os.path.join(get_package_share_directory('elohim'), 'points.json')
-    try:
-        with open(points_file) as f:
-            points = json.load(f)
-            spawn_coords = np.array([[t["x"], t["y"]] for t in points["spawn_coords"]])
-    except FileNotFoundError:
-        print(f"Cannot find points.json file (at {os.path.dirname(points_file)})")
-        print("Have you set up your environment at least once after your latest clean rebuild?"
-              "\n\tros2 run elohim init")
-        rclpy.shutdown()
-        exit()
 
     # Pre-compute all the spawn points, shuffle them up
     angles = np.linspace(0, np.pi * 2, 360 // 2)
-    spawn_poses = np.array(list(itertools.product(spawn_coords, angles)))
-    ids = np.arange(len(spawn_poses))
-    np.random.shuffle(ids)
-    spawn_poses = spawn_poses[ids]
+    np.random.shuffle(angles)
 
     asc = SyncServiceCaller(rclpy)
-    random_controller = DodgerControllerr(args.model, args.sample)
+    random_controller = DodgerControllerr(args.model, args.samples)
     r = partial(run, random_controller, asc)
 
-    np.random.shuffle(angles)
-    if args.s is not None:
-        for tt in angles:
-            print((tt - np.pi) * 180 / np.pi)
-            if r(*args.s, tt - np.pi) < 0:
-                break
-    else:
-        for ((x, y), t), tt in zip(spawn_poses, angles):
-            if r(x, y, t, tt - np.pi) < 0:
-                break
+    s = args.s
+    if s is None:
+        s = 0., 0., np.pi * 3 / 4
+    for tt in angles:
+
+        if r(*s, tt - np.pi) < 0:
+            break
 
     random_controller.destroy_node()
     rclpy.shutdown()

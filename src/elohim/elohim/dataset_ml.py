@@ -18,21 +18,17 @@ from tqdm import tqdm
 import config
 from utils import cv_from_binary, _moveaxis, scaled_full_robot_geometry, plot_transform, mktransf
 
-
+to_pil = transforms.Compose([transforms.ToPILImage(), transforms.Resize(120)])
+to_tensor = transforms.Compose([
+        transforms.ToTensor(),  # outputs a (C x H x W) in the range [0.0, 1.0]
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
 def transform_function(resize=False, height=120):
     # Bayesian is lighter with this trick
     #height = 60
     #if resize:
     #    # A quarter of the original size
     #    height = 60
-
-    # np.ndarray of C x H x W to PIL Image
-    to_pil = transforms.Compose([transforms.ToPILImage(), transforms.Resize(height)])
-
-    to_tensor = transforms.Compose([
-        transforms.ToTensor(),  # outputs a (C x H x W) in the range [0.0, 1.0]
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
 
     def transform(x, flip=False):
         x = cv_from_binary(x)  # outputs (240, 320, 3)
