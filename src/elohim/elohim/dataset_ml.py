@@ -19,15 +19,15 @@ import config
 from utils import cv_from_binary, _moveaxis, scaled_full_robot_geometry, plot_transform, mktransf
 
 
-def transform_function(resize=False):
-    # np.ndarray of C x H x W to PIL Image
-    torchvision_transforms = [transforms.ToPILImage()]
-
+def transform_function(resize=False, height=120):
     # Bayesian is lighter with this trick
-    if resize:
-        # Half of the original size
-        torchvision_transforms.append(transforms.Resize(120))
-    to_pil = transforms.Compose(torchvision_transforms)
+    #height = 60
+    #if resize:
+    #    # A quarter of the original size
+    #    height = 60
+
+    # np.ndarray of C x H x W to PIL Image
+    to_pil = transforms.Compose([transforms.ToPILImage(), transforms.Resize(height)])
 
     to_tensor = transforms.Compose([
         transforms.ToTensor(),  # outputs a (C x H x W) in the range [0.0, 1.0]
@@ -97,8 +97,8 @@ def get_dataset(d_path, batch_size=8, keep=1., resize=False, test_only=False, sh
         random_flips = [True, False, False]
         shuffle_sets = [shuffle_train, False, False]
 
-    ffs = [os.path.basename(x).rsplit('_', 1)[-1][:-4] for x in other_files]
-    assert set(sorted_sets) <= set(ffs), ffs
+    ffs = [os.path.basename(x)[:-4] for x in other_files]
+    assert set(sorted_sets) <= set(ffs), (sorted_sets,ffs)
 
     # print('Loading dataset, this could take a while.. ')
     # start = time.time()
@@ -214,6 +214,7 @@ def main():
     parser.add_argument('--dataset', '-d', metavar='dir', dest='d_path', help='Directory with pickles', required=True)
     parser.add_argument('--output', '-o', metavar='dir', dest='o_path', help='Directory for samples')
     args = parser.parse_args()
+    print(args.d_path, args.o_path)
 
     o_path = args.d_path if args.o_path is None else args.o_path
     sample_dir = os.path.join(o_path, 'dataset_samples')

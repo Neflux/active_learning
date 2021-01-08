@@ -119,14 +119,6 @@ def quaternion2yaw(i):
 
 
 
-
-
-
-
-
-
-
-
 def random_PIL():
     a = np.random.rand(*config.camera_shape) * 255
     return Image.fromarray(a.astype('uint8')).convert('RGB')

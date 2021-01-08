@@ -1,5 +1,3 @@
-import code
-
 import json
 import os
 import random
@@ -9,29 +7,24 @@ from time import sleep
 
 import matplotlib.pyplot as plt
 import numpy as np
-
 import pandas as pd
 import seaborn as sns
 import torch
-
 import torch.nn as nn
 import torch.optim as optim
+from matplotlib import cm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from sklearn.metrics import roc_auc_score
+from tqdm import tqdm
 
 import bnn
 import config
 from animator import Animator
-from bnn.nn import Entropy
 from dataset_ml import get_dataset, compute_map_density
 from dataset_ml import transform_function
-from model import ConvNet, BayesConvNet
+from models import initialize_model
 from pytorchtools import EarlyStopping
-from utils import random_session_name, _moveaxis, scaled_full_robot_geometry, mktransf, plot_transform
-
-from matplotlib import cm
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-
-from tqdm import tqdm
+from utils import random_session_name, scaled_full_robot_geometry, mktransf, plot_transform
 
 
 def plot_metrics(train_metrics, val_metrics, test_metrics, params, save_path):
@@ -265,19 +258,17 @@ def train_val_test(model, device, dataset, batch_size, val_dataset, targets, bay
     train_losses, valid_losses, avg_train_losses, avg_valid_losses, train_metrics, val_metrics, test_metrics = \
         ([] for _ in range(7))
 
-    loss = torch.tensor(np.inf)
     for epoch in range(1, n_epochs + 1):
 
         # Training
 
         model.train()
-
-        for batch_idx, (X, y) in enumerate(
-                tqdm(train_loader, desc=f'[E{epoch:02}] Training, last loss: {loss.item():2.4f})')):
+        t = tqdm(train_loader)
+        for batch_idx, (X, y) in enumerate(t):
             loss, auc, entropy, accuracy = training_step(model, X.to(device), y.to(device), optimizer, loss_function,
                                                          auc_function, aggregate_samples, entropy_accuracy_function,
                                                          device)
-
+            t.set_description(f'[E{epoch:02}] Training, last loss: {loss.item():2.4f})')
             train_losses.append(loss.item())
             train_metrics.append([loss.item(), entropy.item(), accuracy.item(), auc])
 
@@ -285,11 +276,12 @@ def train_val_test(model, device, dataset, batch_size, val_dataset, targets, bay
 
         model.eval()
         with torch.no_grad():
-            for batch_idy, (X, y) in enumerate(
-                    tqdm(val_loader, desc=f'[E{epoch:02}] Validation, last loss: {loss.item():2.4f})')):
+            t = tqdm(val_loader)
+            for batch_idy, (X, y) in enumerate(t):
                 _, loss, auc, entropy, accuracy = testing_step(model, X.to(device), y.to(device), loss_function,
                                                                auc_function, aggregate_samples,
                                                                entropy_accuracy_function, device)
+                t.set_description(f'[E{epoch:02}] Validation, last loss: {loss.item():2.4f})')
                 valid_losses.append(loss.item())
                 val_metrics.append([loss.item(), entropy.item(), accuracy.item(), auc])
             visual_test(model, val_dataset, targets, os.path.join(path, 'video', 'validation', f'epoch{epoch}'),
@@ -319,10 +311,12 @@ def train_val_test(model, device, dataset, batch_size, val_dataset, targets, bay
     outputs, ys = [], []
     appropriate_free = (lambda x: np.array([free_tensor(s) for s in x])) if bayes else (lambda x: free_tensor(x))
     with torch.no_grad():
-        for batch_idx, (X, y) in enumerate(tqdm(test_loader, desc=f'Testing, last loss: {loss.item():2.4f})')):
+        t = tqdm(test_loader)
+        for batch_idx, (X, y) in enumerate(t):
             output, loss, auc, entropy, accuracy = testing_step(model, X.to(device), y.to(device), loss_function,
                                                                 auc_function, aggregate_samples,
                                                                 entropy_accuracy_function, device)
+            t.set_description(f'Testing, last loss: {loss.item():2.4f})')
             outputs.append(appropriate_free(model(X.to(device))))
             ys.append(free_tensor(y))
             test_metrics.append([loss.item(), entropy.item(), accuracy.item(), auc])
@@ -448,34 +442,7 @@ def main():
     # torch.autograd.set_detect_anomaly(mode=True)
 
     # Initialize model, different inverted residual structure to achieve ~1mil in both despite the bayesian layer
-    common_parameters = {'num_classes': 400, 'mode': 'softmax'}
-    if bayes:
-        irs = [[1, 16, 1, 1],
-               [6, 24, 2, 2],
-               [6, 32, 3, 2],
-               [6, 64, 4, 2]]
-        model = BayesConvNet(inverted_residual_setting=irs, samples=args.samples, **common_parameters)
-    else:
-        irs = [[1, 16, 1, 1],
-               [6, 24, 2, 2],
-               [6, 32, 3, 2],
-               [6, 64, 2, 2],
-               [6, 96, 1, 1]]
-        model = ConvNet(inverted_residual_setting=irs, **common_parameters)
-
-    # Deal with multiple GPUs if present
-    batch_size = args.batch_size
-    parallel = torch.cuda.device_count() > 1
-    if parallel:
-        print(f"Using {torch.cuda.device_count()} GPUs!")
-        device = torch.device(f"cuda" if torch.cuda.is_available() else "cpu")
-        batch_size = int(batch_size * torch.cuda.device_count())
-        model = nn.DataParallel(model)
-        model.samples = args.samples
-    else:
-        device = torch.device(f"cuda:0" if torch.cuda.is_available() else "cpu")
-        print('Using device:', device)
-    model.to(device)
+    model, batch_size, device, parallel = initialize_model(args.batch_size, args.samples)
 
     # Initialize a new session
     experiment_dir = f'{dt.now().strftime("%m%d-%H%M")}_{code_name}{f"_b{args.samples}" if bayes else ""}'
@@ -487,7 +454,7 @@ def main():
     pretrained_weights_path = os.path.join(o_path, 'pretrained.pt')
     torch.save(model.state_dict(), pretrained_weights_path)
 
-    for perc in [0.0625, .125, .25, .50, .75, 1]:
+    for perc in [0.0625, .125, .25, .50, .75, 1][-1:]: # TODO
         print(f'Now training using only {perc*100}%')
 
         # Hopefully the same subsets are drafted
@@ -495,7 +462,7 @@ def main():
 
         model.load_state_dict(torch.load(pretrained_weights_path, map_location=device))
 
-        session_folder = os.path.join(o_path, f'training_{int(perc*100)}')
+        session_folder = os.path.join(o_path, f'training_{int(perc*100):03}')
 
         # Prepare a torch-ready tensor dataset for training
         (train_dataframe, val_dataframe, test_dataframe), torch_datasets = \

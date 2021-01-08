@@ -1,21 +1,14 @@
-import code
 import json
 import os
 import random
 
 import numpy as np
 import torch
-import torch.nn as nn
 from tqdm import tqdm
 
 from dataset_ml import get_dataset
-from model import ConvNet, BayesConvNet
+from models import initialize_model
 from training import free_tensor, plot_entropy_auc_summary, visual_test
-
-
-def flexible_weights(weights_path, device):
-    return {k.replace('module.', ''): v
-            for k, v in torch.load(weights_path, map_location=device).items()}
 
 
 # This only works with a model that normalizes its output with a softmax
@@ -66,42 +59,7 @@ def main():
     torch.autograd.set_detect_anomaly(mode=True)
 
     # Initialize model, different inverted residual structure to achieve ~1mil in both despite the bayesian layer
-    common_parameters = {'num_classes': 400, 'mode': 'softmax'}
-    if bayes:
-        irs = [[1, 16, 1, 1],
-               [6, 24, 2, 2],
-               [6, 32, 3, 2],
-               [6, 64, 4, 2]]
-        model = BayesConvNet(inverted_residual_setting=irs, samples=args.samples, **common_parameters)
-        model.samples = args.samples
-    else:
-        irs = [[1, 16, 1, 1],
-               [6, 24, 2, 2],
-               [6, 32, 3, 2],
-               [6, 64, 2, 2],
-               [6, 96, 1, 1]]
-        model = ConvNet(inverted_residual_setting=irs, **common_parameters)
-
-    # Deal with multiple GPUs if present
-    batch_size = args.batch_size
-    parallel = torch.cuda.device_count() > 1
-
-    if parallel:
-        print(f"Using {torch.cuda.device_count()} GPUs!")
-        device = torch.device(f"cuda" if torch.cuda.is_available() else "cpu")
-        batch_size = int(batch_size * torch.cuda.device_count())
-    else:
-        device = torch.device(f"cuda:0" if torch.cuda.is_available() else "cpu")
-        print('Using device:', device)
-
-    try:
-        model.load_state_dict(flexible_weights(weights_path, device))
-    except RuntimeError:
-        print('Model is incompatible')
-
-    if parallel:
-        model = nn.DataParallel(model)
-    model.to(device)
+    model, batch_size, device, parallel = initialize_model(args.batch_size, args.sample, weights_path)
 
     # Prepare a torch-ready tensor dataset for training
     test_dataframe, torch_datasets = get_dataset(args.d_path, batch_size=batch_size, resize=bayes, test_only=True)

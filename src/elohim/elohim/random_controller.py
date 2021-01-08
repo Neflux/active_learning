@@ -34,15 +34,13 @@ class RandomController(Node):
 
     # SENSORS = ['center']
 
-    def __init__(self, targets: np.ndarray,
-                 plane_side: float = 10.1,
+    def __init__(self, plane_side: float = 10.1,
                  thymio_name: str = "thymioX",
                  rate: int = 10) -> None:
 
         super().__init__('random_controller')
         self.get_logger().set_level(LoggingSeverity.INFO)
 
-        self.targets = targets
         self.plane_side = plane_side
         self.robot_name = thymio_name
         self.raw_rate = rate
@@ -166,6 +164,7 @@ class RandomController(Node):
     def obstacle_nearby(self):
         return any([x < config.max_sensing_distance for x in self.radar.values()])
 
+
 def run(node, service_caller, x, y, t):
     """
     Sets up the thymio for a new run and adds some logic for the obstacle scan
@@ -227,8 +226,10 @@ def run(node, service_caller, x, y, t):
         return -1
     return 1
 
+
 parser = argparse.ArgumentParser(description='Process some integers.', prefix_chars='@')
 parser.add_argument('@@s', nargs=3, help="x,y,t", type=float, default=None)
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -241,7 +242,6 @@ def main(args=None):
         with open(points_file) as f:
             points = json.load(f)
             spawn_coords = np.array([[t["x"], t["y"]] for t in points["spawn_coords"]])
-            targets = np.array([[t["x"], t["y"]] for t in points["targets"]])
 
     except FileNotFoundError:
         print(f"Cannot find points.json file (at {os.path.dirname(points_file)})")
@@ -258,7 +258,7 @@ def main(args=None):
     spawn_poses = spawn_poses[ids]
 
     asc = SyncServiceCaller(rclpy)
-    random_controller = RandomController(targets=targets)
+    random_controller = RandomController()
     r = partial(run, random_controller, asc)
 
     if args.s is not None:

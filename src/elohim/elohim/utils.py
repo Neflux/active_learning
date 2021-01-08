@@ -154,3 +154,11 @@ class HandlerRect(HandlerPatch):
         p.set_transform(trans)
 
         return [p]
+
+
+def fov_mask():
+    mask = np.full((20, 20), fill_value=1)
+    mask[np.tril_indices(20, k=-10)] = 0
+    mask = np.rot90(mask, k=-1)
+    mask[np.tril_indices(20, k=-10)] = 0
+    return np.rot90(mask).astype(bool)
