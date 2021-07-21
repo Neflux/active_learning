@@ -5,6 +5,7 @@ import numpy as np
 import rclpy
 from PIL import Image as Image
 from cv_bridge import CvBridge
+from rclpy import Parameter
 from rclpy.node import Node
 from rclpy.qos import QoSReliabilityPolicy
 from sensor_msgs.msg import Image as ROSImage
@@ -18,10 +19,13 @@ def random_PIL():
 class Monitor(Node):
     def __init__(self, camera_rate=10):
         super().__init__('monitor_node')
+        self.set_parameters([Parameter('use_sim_time', Parameter.Type.BOOL, True)])
+
         self.camera_rate = camera_rate
         self.camera_period = 1. / camera_rate
         self.bridge = CvBridge()
-        self.create_subscription(ROSImage, '/thymioX/head_camera/image_raw', self.update_image,
+        #/ thymioX / third_person / image_raw
+        self.create_subscription(ROSImage, '/thymioX/third_person/image_raw', self.update_image,
                                  qos_profile=rclpy.qos.QoSProfile(depth=10,
                                                                   reliability=QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT))
 

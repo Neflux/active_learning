@@ -1,0 +1,61 @@
+Bootstrap: docker
+From: nvidia/cuda:10.2-cudnn7-devel-ubuntu18.04
+%setup
+%files
+%environment
+%post
+export DEBIAN_FRONTEND=noninteractive
+apt update && apt -y install git wget nano python3.8 python3-pip python3-opencv htop ffmpeg
+python3.8 -m pip install --upgrade pip
+python3.8 -m pip install scipy numpy torch==1.5.0 torchvision==0.6.0 torchsummary h5py tqdm matplotlib pandas scikit-learn seaborn opencv-python
+%environment
+# It forces applications to use the default language for output:
+export LC_ALL=C
+# The GPU IDs will be ordered by pci bus IDs
+export CUDA_DEVICE_ORDER="PCI_BUS_ID" 
+%runscript
+%startscript
+%test
+%labels
+%help
+Usage:c
+
+    0 build this recipe
+
+        singularity build --fakeroot --force exp_pickle5_py38.sif exp.def
+
+    1 check if any GPU is currently free
+        
+        nvidia-smi -l 1
+
+    2 inform people you are gonna use the GPU on the slack channel
+    
+        2a Open an interactive shell (can keep it open when you are done with GPU). Mind the starting slash or the ~, depending if you wanna point to root or %HOME% dir.
+    
+singularity shell --cleanenv --contain --nv \
+--bind maia/code/:/code \
+--bind dataset/:/data \
+--bind maia/experiments/:/maia_experiments \
+--bind data/:/maia_data \
+--bind maia/experiments/:/maia_experiments \
+exp_py38_tethys.sif
+
+singularity shell --cleanenv --contain --nv --bind maia/code/:/code --bind maia/dataset/:/data --bind maia/experiments/:/experiments exp_pickle5_py38.sif
+e-yF9xjxs\ 
+sudo mount.cifs //maia.idsia.ch/home maia/ -o user=stefano.bonato@supsi.ch,uid=$UID,gid=$GID,rw,vers=3
+CUDA_VISIBLE_DEVICES=3 python3.8 -u /code/training.py -d /data/train.pkl -o /experiments --batch-size 160
+CUDA_VISIBLE_DEVICES=0,2 python3.8 -u /code/training.py -d /data/ -o /experiments --batch-size 55 --samples 10
+
+python3.8 -u /code/update_maps.py -d /data/ --window 10 --delta 0.4
+
+
+1224-1944_grey-donkey
+CUDA_VISIBLE_DEVICES=0,1 python3.8 -u /code/testing.py -d /data/ -o /experiments/1225-0018_blue-hippo_b10 --batch-size 54 --samples 10
+CUDA_VISIBLE_DEVICES=3 python3.8 -u /code/testing.py -d /data/ -o /experiments/0101-1547_green-maverick_b10 --batch-size 54 -s 10
+
+        Singularity> python3 --version
+        Singularity> python3 training.py --dataset data/dataset.pkl --batch-size 64
+
+    2b Execute a command. It will close right after completion (could be problematic in case of disconnections?)
+
+        singularity exec --cleanenv --contain --nv --bind maya-mounted-folder/data:/data --bind maya-mounted-folder/code:/code image.sif python3 --version

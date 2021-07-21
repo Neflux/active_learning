@@ -14,17 +14,20 @@ try:  # Prioritize local src in case of PyCharm execution, no need to rebuild wi
 except ImportError:
     import elohim.config as config
 
-def generate_safe_map(spawn_area = 20, step = 5, limit = 2, num_obs=625):
 
+def generate_safe_map(spawn_area=20, step=5, limit=2, num_obs=625, center_spawn=False):
     # Safe internal spawn coordinates
     ls = np.linspace(0, spawn_area, int(2 * spawn_area / step) + 1) - spawn_area / 2
-    spawn_coords = np.stack(np.meshgrid(ls[limit:-limit], ls[limit:-limit])).reshape([2, -1]).T
+
+    spawn_coords = np.array([[0.,0.]])
+    if not center_spawn:
+        spawn_coords = np.stack(np.meshgrid(ls[limit:-limit], ls[limit:-limit])).reshape([2, -1]).T
 
     # Obstacle coordinates
-    ls = np.linspace(0, spawn_area, int(np.sqrt(num_obs))+1)
+    ls = np.linspace(0, spawn_area, int(np.sqrt(num_obs)) + 1)
     a = np.stack(np.meshgrid(ls, ls)).reshape([2, -1]).T
     a = a + np.random.normal(0, 0.2, size=a.shape)
-    a -= spawn_area /2
+    a -= spawn_area / 2
 
     # Remove obstacles too close too spawns
     d = cdist(spawn_coords, a)
@@ -32,7 +35,7 @@ def generate_safe_map(spawn_area = 20, step = 5, limit = 2, num_obs=625):
     a = a[~mask]
 
     # Remove obstacles too close to each other
-    d = cdist(a, a)+np.eye(a.shape[0])
+    d = cdist(a, a) + np.eye(a.shape[0])
     mask = np.min(d, axis=0) < 0.15
     targets = a[~mask]
 
@@ -42,7 +45,8 @@ def generate_safe_map(spawn_area = 20, step = 5, limit = 2, num_obs=625):
 
     return spawn_coords, targets
 
-def generate_map(seed, density=1, threshold=1, spawn_area=20, step=5, limit = 2):
+
+def generate_map(seed, density=1, threshold=1, spawn_area=20, step=5, limit=2):
     np.random.seed(seed)
 
     ls = np.linspace(0, spawn_area, int(2 * spawn_area / step) + 1)
@@ -68,6 +72,7 @@ def generate_map(seed, density=1, threshold=1, spawn_area=20, step=5, limit = 2)
 
     return spawn_coords, targets
 
+
 def get_resource(name, root=None):
     if root is None:
         root = os.path.join(get_package_share_directory('elohim'), "models")
@@ -85,9 +90,6 @@ def euler_to_quaternion(roll=0, pitch=0, yaw=0):
     w = np.cos(roll / 2) * np.cos(pitch / 2) * np.cos(yaw / 2) + np.sin(roll / 2) * np.sin(pitch / 2) * np.sin(yaw / 2)
 
     return Quaternion(x=x, y=y, z=z, w=w)
-
-
-
 
 
 def quaternion_to_euler(q):
@@ -116,7 +118,6 @@ def quaternion2yaw(i):
     x, y, z, w = i
     q = Quaternion(x=x, y=y, z=z, w=w)
     return quaternion_to_euler(q)[2]
-
 
 
 def random_PIL():
@@ -153,15 +154,15 @@ def add_arrow(line, xdata, ydata, step=1, direction='right', size=15, color=None
     if color is None:
         color = line.get_color()
 
-    #xdata = line.get_xdata()
-    #ydata = line.get_ydata()
+    # xdata = line.get_xdata()
+    # ydata = line.get_ydata()
 
     # if position is None:
     #     position = xdata.mean()
     # # find closest index
     # start_ind = np.argmin(np.absolute(xdata - position))
 
-    for start_ind in range(len(xdata)-step, step, -step):
+    for start_ind in range(len(xdata) - step, step, -step):
 
         if direction == 'right':
             end_ind = start_ind + 1

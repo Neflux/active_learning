@@ -24,7 +24,8 @@ from dataset_ml import get_dataset, compute_map_density
 from dataset_ml import transform_function
 from models import initialize_model
 from pytorchtools import EarlyStopping
-from utils import random_session_name, scaled_full_robot_geometry, mktransf, plot_transform
+from utils import random_session_name, scaled_full_robot_geometry, mktransf, plot_transform, predictions_from_dataframe, \
+    free_tensor, flexible_free_tensor, batch_entropy_mi
 
 
 def plot_metrics(train_metrics, val_metrics, test_metrics, params, save_path):
@@ -65,17 +66,7 @@ def visual_test(model, dataset, targets, path, device, n=1, bayes=False, batch_s
 
     def store_animation(run_id):
         run_df = dataset[dataset[target_type] == run_id].copy()
-        model.eval()
-        with torch.no_grad():
-            batches = np.split(run_df, np.arange(batch_size, len(run_df), batch_size))
-            preds = []
-            for x in tqdm(batches, desc=f'Computing predictions (batch size: {batch_size})'):
-                p = model(torch.stack(x['image'].map(tf).values.tolist()).to(device))
-                if bayes:
-                    p = torch.stack(p, dim=0).mean(dim=0)
-                preds.append(free_tensor(p))
-            occ_map = np.vstack(preds)[..., -1]
-        run_df['predicted_map'] = pd.Series(occ_map.tolist(), index=run_df.index)
+        run_df['predicted_map'], _, _ = predictions_from_dataframe(model, run_df, batch_size, device, bayes, tf)
         video_path = os.path.join(path, f'{run_id}.mp4')
         Animator(run_df, targets, save_path=video_path)
 
@@ -86,7 +77,7 @@ def visual_test(model, dataset, targets, path, device, n=1, bayes=False, batch_s
         run_ids = np.random.choice(interesting_run_ids, size=n)
     else:
         n = len(run_ids)
-    print(f'Computing animations with predictions for {n} {target_type.replace("_"," ")}{"s" if n > 1 else ""}:')
+    print(f'Computing animations with predictions for {n} {target_type.replace("_", " ")}{"s" if n > 1 else ""}:')
     sleep(0.2)
     for r in run_ids:
         store_animation(r)
@@ -104,10 +95,6 @@ def compute_masks(y, device):
     masked_stacked_y = free_tensor(torch.stack([1 - y, y], dim=2)[mask])
 
     return mask, masked_y, masked_stacked_y
-
-
-def free_tensor(x: torch.Tensor):
-    return x.detach().cpu().numpy()
 
 
 def get_loss(loss_function, divergence=None, data_parallel=False):
@@ -258,6 +245,7 @@ def train_val_test(model, device, dataset, batch_size, val_dataset, targets, bay
     train_losses, valid_losses, avg_train_losses, avg_valid_losses, train_metrics, val_metrics, test_metrics = \
         ([] for _ in range(7))
 
+    appropriate_free = flexible_free_tensor(bayes)
     for epoch in range(1, n_epochs + 1):
 
         # Training
@@ -276,19 +264,26 @@ def train_val_test(model, device, dataset, batch_size, val_dataset, targets, bay
 
         model.eval()
         with torch.no_grad():
+
             t = tqdm(val_loader)
+            outputs, ys = [], []
             for batch_idy, (X, y) in enumerate(t):
                 _, loss, auc, entropy, accuracy = testing_step(model, X.to(device), y.to(device), loss_function,
                                                                auc_function, aggregate_samples,
                                                                entropy_accuracy_function, device)
                 t.set_description(f'[E{epoch:02}] Validation, last loss: {loss.item():2.4f})')
+                outputs.append(appropriate_free(model(X.to(device))))
+                ys.append(free_tensor(y))
                 valid_losses.append(loss.item())
                 val_metrics.append([loss.item(), entropy.item(), accuracy.item(), auc])
-            visual_test(model, val_dataset, targets, os.path.join(path, 'video', 'validation', f'epoch{epoch}'),
-                        device, bayes=bayes, n=1, batch_size=batch_size, target_type='run')
+            # Plot the entropy and AUC of the predicted occupancy maps, static image over the entire test set
+            p = os.path.join(path, 'validation', f'epoch{epoch}')
+
+            visual_test(model, val_dataset, targets, p, device, bayes=bayes, n=1,
+                        batch_size=batch_size, target_type='run')
+            plot_entropy_auc_summary(outputs, ys, bayes=bayes, save_path=os.path.join(p, 'uncertainty.png'))
 
         # Early stopping logic block
-
         train_loss, valid_loss = np.average(train_losses), np.average(valid_losses)
         avg_train_losses.append(train_loss)
         avg_valid_losses.append(valid_loss)
@@ -309,7 +304,6 @@ def train_val_test(model, device, dataset, batch_size, val_dataset, targets, bay
     model.eval()
 
     outputs, ys = [], []
-    appropriate_free = (lambda x: np.array([free_tensor(s) for s in x])) if bayes else (lambda x: free_tensor(x))
     with torch.no_grad():
         t = tqdm(test_loader)
         for batch_idx, (X, y) in enumerate(t):
@@ -322,10 +316,6 @@ def train_val_test(model, device, dataset, batch_size, val_dataset, targets, bay
             test_metrics.append([loss.item(), entropy.item(), accuracy.item(), auc])
 
     return (train_metrics, val_metrics, test_metrics), (outputs, ys)
-
-
-def entropy(x, axis=-1):
-    return np.sum(-x * np.log2(x + 1e-10), axis=axis)
 
 
 def plot_entropy_auc_summary(outputs, ys, bayes, save_path):
@@ -341,16 +331,7 @@ def plot_entropy_auc_summary(outputs, ys, bayes, save_path):
     if bayes:
         ave_preds = np.mean(ave_preds, axis=1)
 
-    # (minibatch, 400, 2) -> (minibatch, 400) -> (400)
-    entropy_cells = entropy(ave_preds, axis=-1).mean(axis=0)
-
-    if bayes:
-        #(samples, minibatch, 400, 2) -> (samples, minibatch, 400) -> (samples, 400) -> (400)
-        entropy_cells_exp = entropy(preds, axis=-1).mean(axis=1).mean(axis=0)
-    else:
-        entropy_cells_exp = 0
-
-    mutual_info = entropy_cells - entropy_cells_exp
+    entropy_cells, mutual_info = batch_entropy_mi(preds, ave_preds, bayes)
 
     y = np.vstack(ys)
     y[y == -1] = np.nan
@@ -454,15 +435,15 @@ def main():
     pretrained_weights_path = os.path.join(o_path, 'pretrained.pt')
     torch.save(model.state_dict(), pretrained_weights_path)
 
-    for perc in [0.0625, .125, .25, .50, .75, 1][-1:]: # TODO
-        print(f'Now training using only {perc*100}%')
+    for perc in [0.0001]:  # TODO
+        print(f'Now training using only {perc * 100:1g}%')
 
         # Hopefully the same subsets are drafted
         reset_random_generators()
 
         model.load_state_dict(torch.load(pretrained_weights_path, map_location=device))
 
-        session_folder = os.path.join(o_path, f'training_{int(perc*100):03}')
+        session_folder = os.path.join(o_path, f'training_{int(perc * 100):03}')
 
         # Prepare a torch-ready tensor dataset for training
         (train_dataframe, val_dataframe, test_dataframe), torch_datasets = \

@@ -7,9 +7,9 @@ import numpy as np
 import pandas as pd
 import torch
 
-
 import matplotlib.patches as mpatches
 from matplotlib.legend_handler import HandlerPatch
+from tqdm import tqdm
 
 try:  # Prioritize local src in case of PyCharm execution, no need to rebuild with colcon
     import config
@@ -17,21 +17,29 @@ except ImportError:
     import elohim.config as config
 
 
-def binary_from_cv(cv2_img, jpeg_quality=90):
-    retval, buf = cv2.imencode('.JPEG', cv2_img,
-                               [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality,
-                                cv2.IMWRITE_JPEG_OPTIMIZE, 1])
+def str_from_bytes(buf):
     with io.BytesIO() as memfile:
         np.save(memfile, buf)
         memfile.seek(0)
         return memfile.read().decode('latin-1')
 
 
-def cv_from_binary(serialized):
+def binary_from_cv(cv2_img, jpeg_quality=90):
+    retval, buf = cv2.imencode('.JPEG', cv2_img,
+                               [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality,
+                                cv2.IMWRITE_JPEG_OPTIMIZE, 1])
+    return str_from_bytes(buf)
+
+
+def bytes_from_str(serialized):
     with io.BytesIO() as memfile:
         memfile.write(serialized.encode('latin-1'))
         memfile.seek(0)
-        buf = np.load(memfile)
+        return np.load(memfile)
+
+
+def cv_from_binary(serialized):
+    buf = bytes_from_str(serialized)
     return cv2.imdecode(buf, flags=cv2.IMREAD_UNCHANGED)
 
 
@@ -117,7 +125,6 @@ ROBOT_GEOMETRY_FULL = [
 ]
 
 
-
 def scaled_full_robot_geometry(ratio):
     return [
         mktransf((0.0630 * ratio, 0.0493 * ratio, 0.6632885724142987)),  # left
@@ -162,3 +169,66 @@ def fov_mask():
     mask = np.rot90(mask, k=-1)
     mask[np.tril_indices(20, k=-10)] = 0
     return np.rot90(mask).astype(bool)
+
+
+def predictions_from_dataframe(model, df, batch_size, device, bayes, transform, target_column='image'):
+    model.eval()
+    with torch.no_grad():
+        batches = np.split(df, np.arange(batch_size, len(df), batch_size))
+        omap, entr, mi = [], [], []
+        appropriate_free = flexible_free_tensor(bayes)
+        for x in tqdm(batches, desc=f'Computing predictions (batch size: {batch_size})'):
+            image = torch.stack(x[target_column].apply(transform).values.tolist())
+            preds = appropriate_free(model(image.to(device)))
+
+            if bayes:
+                preds = np.moveaxis(preds, 1, 0)
+
+            ave_preds = preds
+            if bayes:
+                ave_preds = np.mean(ave_preds, axis=1)
+                entropy_cells_exp = entropy(preds, axis=-1).mean(axis=1)
+            else:
+                entropy_cells_exp = 0
+            entropy_cells = entropy(ave_preds, axis=-1)
+            mutual_info = entropy_cells - entropy_cells_exp
+
+            omap.append(ave_preds)
+            entr.append(entropy_cells)
+            mi.append(mutual_info)
+
+        omap, entr, mi = np.vstack(omap)[..., -1], np.vstack(entr), np.vstack(mi)
+
+    return [pd.Series(x.reshape(-1, 20, 20).tolist(), index=df.index) for x in [omap, entr, mi]]
+
+
+def free_tensor(x: torch.Tensor):
+    return x.detach().cpu().numpy()
+
+
+def flexible_free_tensor(bayes):
+    return (lambda x: np.array([free_tensor(s) for s in x])) if bayes else (lambda x: free_tensor(x))
+
+
+def batch_entropy_mi(preds, ave_preds, bayes, minibatch_mean=True):
+    # (minibatch, 400, 2) -> (minibatch, 400) -> (400)
+    entropy_cells = entropy(ave_preds, axis=-1)
+    if minibatch_mean:
+        entropy_cells = entropy_cells.mean(axis=0)
+
+    if bayes:
+
+        entropy_cells_exp = entropy(preds, axis=-1).mean(axis=0)
+        if minibatch_mean:
+            # (samples, minibatch, 400, 2) -> (samples, minibatch, 400) -> (samples, 400) -> (400)
+            entropy_cells_exp = entropy(preds, axis=-1).mean(axis=1).mean(axis=0)
+    else:
+        entropy_cells_exp = 0
+
+    mutual_info = entropy_cells - entropy_cells_exp
+
+    return entropy_cells, mutual_info
+
+
+def entropy(x, axis=-1):
+    return np.sum(-x * np.log2(x + 1e-10), axis=axis)

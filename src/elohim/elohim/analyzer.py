@@ -7,6 +7,7 @@ import warnings
 import matplotlib
 import numpy as np
 import pandas as pd
+import tables
 
 matplotlib.rcParams['axes.unicode_minus'] = False
 from scipy.stats import stats
@@ -16,17 +17,43 @@ from tqdm import tqdm
 tqdm.pandas()
 
 try:  # Prioritize local src in case of PyCharm execution, no need to rebuild with colcon
-    from utils_ros import cv_from_binary, ROBOT_GEOMETRY_SIMPLE, print_full, mktransf, COORDS
+    from utils import cv_from_binary, print_full, mktransf, COORDS
     import config
 except ImportError:
-    from elohim.utils import cv_from_binary, print_full
-    from elohim.utils_ros import ROBOT_GEOMETRY_SIMPLE, mktransf, COORDS
-    import elohim.config as config
+    from elohim.utils import cv_from_binary, print_full, mktransf, COORDS
+    import elohim.config
 
 d45 = np.pi / 4
 
 
-def mergedfs(dfs, tolerance='1s'):
+def load_ros_data(dir_path, verbose=False):
+    fp_files = glob.glob(f'{dir_path}/*.h5')
+    files = [os.path.basename(x) for x in fp_files]
+    assert len(files) >= 4
+
+    print('Preparing dataset..', end=' ')
+    last_snapshot = {}
+    while len(last_snapshot) == 0:
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=tables.PerformanceWarning)
+                last_snapshot = {}
+                for ff in fp_files:
+                    last_snapshot[ff] = pd.read_hdf(ff)
+                    if verbose:
+                        print(last_snapshot[ff].columns)
+        except ValueError:
+            print(f'No dataset in HDF5 file: {ff}')
+            exit()
+        except Exception:
+            print("Recorder is probably locking the file, trying again in 3 second")
+            time.sleep(3)
+    df = mergedfs(last_snapshot, verbose=verbose)
+    print(f'Unique runs: {len(df["run"].unique())}')
+    return df
+
+
+def mergedfs(dfs, tolerance='1s', verbose=False):
     """Merges different dataframes into a single synchronized dataframe.
         Args:
             @param dfs: a dictionary of dataframes divided by ros topic
@@ -43,7 +70,8 @@ def mergedfs(dfs, tolerance='1s'):
         # Column name formatting
         dfcols = set(df.columns)
         if len(dfcols & seen_cols) > 0:
-            print(set(df.columns), seen_cols)
+            if verbose:
+                print(set(df.columns), seen_cols)
             dfs[topic] = df = df.add_prefix(os.path.basename(topic)[:-3] + '_')
         seen_cols |= dfcols
 
@@ -55,7 +83,8 @@ def mergedfs(dfs, tolerance='1s'):
             dfs[topic] = df = df.loc[~df.index.duplicated(keep='first')]
 
         # Get minimum sized df
-        print(os.path.basename(topic).ljust(max_topic_name + 1), len(df))
+        if verbose:
+            print(os.path.basename(topic).ljust(max_topic_name + 1), len(df))
         if not min_topic or len(dfs[min_topic]) > len(df):
             min_topic = topic
 
@@ -142,194 +171,9 @@ def reset_odom_run_old(df, instructions):
     return df
 
 
-def get_map(rel_transform, sensor_readings, delta):
-    '''Given a pose, constructs the occupancy map w.r.t. that pose.
-    An occupancy map has 3 possible values:
-    1 = object present;
-    0 = object not present;
-    -1 = unknown;
-    Args:
-            rel_transform:  the tranformation matrix from which to compute the occupancy map.
-            sensor_readings:  a list of sensors' readings.
-            ROBOT_GEOMETRY_SIMPLE: the transformations from robot frame to sensors' frames.
-            COORDS: a list of relative coordinates of the form [(x1, y1), ...].
-            delta: the maximum distance between a sensor reading and a coord to be matched.
-    Returns:
-            an occupancy map generated from the relative pose using coords and sensors' readings.
-    '''
-    # print([type(x) for x in [rel_transform, sensor_readings, delta]])
-    # locate objects based on the distances read by the sensors
-    sensor_readings_homo = np.array([[r, 0., 1.] for r in sensor_readings])
-    # batch matrix multiplication
-    rel_object_poses = np.einsum('ijk,ik->ij',
-                                 np.matmul(rel_transform,
-                                           ROBOT_GEOMETRY_SIMPLE),
-                                 sensor_readings_homo)[:, :-1]
-    # initialize occupancy map to -1
-    occupancy_map = np.full((COORDS.shape[0],), -1, dtype=np.float)
-    # compute distances between object poses and coords
-    distances = np.linalg.norm(
-        COORDS[:, None, :] - rel_object_poses[None, :, :],
-        axis=-1)
-    # find all coords with distance <= delta
-    closer_than_delta = distances <= delta
-    icoords, isens = np.where(closer_than_delta)
-    # note: 0.11 is the maximum distance of a detected obstacle
-    occupancy_map[icoords] = sensor_readings[isens] < 0.11
-    return occupancy_map
-
-
-def aggregate(maps):
-    """Aggregates a list of occupancy maps into a single one.
-    Args:
-            maps: a list of occupancy maps.
-    Returns:
-            an aggregate occupancy map.
-    """
-    aggregated_map = np.full_like(maps[0], -1)
-    if (maps == -1).all():
-        return aggregated_map
-    map_mask = (maps != -1).any(1)
-    nonempty_maps = maps[map_mask]
-    cell_mask = (nonempty_maps != -1).any(0)
-    nonempty_cells = nonempty_maps[:, cell_mask]
-    nonempty_cells[nonempty_cells == -1] = np.nan
-    aggregated_map[cell_mask] = stats.mode(
-        nonempty_cells, 0, nan_policy='omit')[0][0]
-    return aggregated_map
-
-
-def add_occupancy_maps(df: pd.DataFrame, window_size=100, empty_value=-2):
-    """
-    Adds occupancy maps in the input DataFrame from index half_window to len(df) - half_window;
-    The remaining iterations have NaN.
-    @param df: DataFrame with ground truth odometry
-    @return:
-    """
-
-    gt_labels = ['ground_truth_odom_x', 'ground_truth_odom_y', 'ground_truth_odom_theta']
-    print('Computing roto-translational matrices for the occupancy maps')
-    df['gt_pose'] = df[gt_labels].progress_apply(mktransf, axis=1)
-
-    half_window = window_size // 2
-    empty_block = [np.ones(400) * empty_value] * half_window
-
-    def rolling_occupancy_map(group):
-        """ Set the occupancy maps to the right indices """
-        # print('Processing new run')
-        gt_pose_id_col = group.columns.get_loc("gt_pose")
-
-        maps = []
-        for i in range(half_window, len(group) - half_window):
-            start_pose = group.iat[i, gt_pose_id_col]
-            win = group.iloc[i - half_window:i + half_window]
-            rt = start_pose @ np.linalg.inv(np.stack(win['gt_pose']))
-            sr = np.where(win['sensor'], 0.12, 0.)[..., np.newaxis]
-            local_maps = np.array([get_map(rel_transform=rt[j], sensor_readings=sr[j], delta=config.occupancy_map_delta)
-                                   for j in range(window_size)])
-            # maps.append(np.rot90(omap.reshape(20, 20), 1))
-            maps.append(aggregate(local_maps))
-
-        result = pd.Series(empty_block + maps + empty_block)
-        if len(result) != len(group):
-            print('ERROR', group.iloc[0]['run'], len(result), len(group))
-            return pd.Series([np.ones(400) * empty_value] * len(group))
-        return result
-
-    print('Computing occupancy maps')
-    result = df.drop(['image'] + gt_labels, axis=1) \
-        .groupby('run').progress_apply(rolling_occupancy_map).to_numpy().flatten()
-
-    df.drop('gt_pose', axis=1, inplace=True)
-    return result
-
-
 def main(args=None):
-    # TODO: load from local file
-    try:
-        for dir in sorted(os.scandir(os.path.join('../../../history')), key=lambda x: x.path, reverse=True):
-            points_file = os.path.join(dir, 'points.json')
-            if not os.path.exists(points_file):
-                continue
-            with open(points_file) as f:
-                points = json.load(f)
-            targets = np.array([[t["x"], t["y"]] for t in points["targets"]])
-
-            fp_files = glob.glob(f'{dir.path}/*.h5')
-            files = [os.path.basename(x) for x in fp_files]
-
-            if 'unified.h5' in files:
-                print('Using cached dataset')
-                df = pd.read_hdf(f'{dir.path}/unified.h5', key='df')
-            elif len(files) >= 4:
-                print('Preparing dataset')
-                last_snapshot = {}
-                while len(last_snapshot) == 0:
-                    try:
-                        with warnings.catch_warnings():
-                            warnings.filterwarnings("ignore", category=PerformanceWarning)
-                            last_snapshot = {}
-                            for ff in fp_files:
-                                last_snapshot[ff] = pd.read_hdf(ff)
-                    except ValueError:
-                        print(f'No dataset in HDF5 file: {ff}')
-                        exit()
-                    except Exception:
-                        print("Recorder is probably locking the file, trying again in 3 second")
-                        time.sleep(3)
-
-                # print(dir.path)
-                df = mergedfs(last_snapshot)
-                print(f'Unique runs: {len(df["run"].unique())}')
-
-                df = df[df['run'].map(df['run'].value_counts()) > config.window_size]
-                print(f'Unique runs after removing short ones: {len(df["run"].unique())}')
-
-                orco = 0.3
-                before_len = len(df)
-
-                def test(rundf):
-                    diff = rundf['ground_truth_odom_x'].diff()
-                    safe = diff.dropna().between(-orco, orco).sum() / len(diff.dropna())
-                    if safe != 1:
-                        safe_mask = diff.between(-orco, orco)
-                        blocks = (safe_mask.shift() != safe_mask).cumsum()
-                        assert len(set(blocks)) == 2, 'Teleport occurs after a valid start'
-                        return rundf[safe_mask]
-                    return rundf
-
-                df = df.groupby('run').apply(test).reset_index(drop=True)  # *100 / len(df['run'].unique())
-                print(f'Teleport iterations dropped: {before_len - len(df)}')
-
-                print(
-                    f'media di rapporto letture positive/totali per runt: {df.groupby("run")["sensor"].apply(lambda x: x.sum() / len(x)).mean() * 100:2.2f}%')
-                # Remove meaningless runs
-                # too_short = df['run'].map(df['run'].value_counts()) > config.window_size // 2
-                # df = df[too_short]
-                # print(f'Unique runs: {len(df["run"].unique())} ({too_short.astype(int).sum()} iterations discarded)')
-                #
-                # # Reset odometry at the start of each run
-                # instructions = {'translation': [('ground_truth_odom_x', 'x'),
-                #                                 ('ground_truth_odom_y', 'y')],
-                #                 'rotation': ('ground_truth_odom_theta', 'theta')}
-                # df = reset_odom_run(df, instructions)
-
-                # Fix timezone
-                # df.index = df.index.tz_localize('UTC').tz_convert('Europe/Rome')
-
-                active_sensor_ratio = len(df[df['sensor']]) / len(df)
-                print(f'% of total iterations with active virtual sensor: {active_sensor_ratio * 100.:.1f}%')
-
-                df = df[df['run'].isin(df['run'].unique()[:3])]
-
-                df['occupancy_map'] = add_occupancy_maps(df, window_size=config.window_size)
-
-                df.to_hdf(f'{dir.path}/unified.h5', key='df', mode='w')
-
-    except FileNotFoundError:
-        print(f"Cannot find points.json file (at {os.path.dirname(points_file)})")
-        print("Have you set up your environment at least once after your latest clean rebuild?"
-              "\n\tros2 run elohim init")
+    print('Nothing to do here')
+    pass
 
 
 if __name__ == '__main__':

@@ -75,13 +75,14 @@ class ServiceTimeoutException(Exception):
 class AsyncServiceCall(Node):
     def __init__(self, srv, srv_namespace, request_dict=None, id=''):
 
-        id = 'minimal_client_async__' + id
+        id = 'minimal_client_async__' + id.replace(' ', '_')
         super().__init__(id)
 
         self.cli = self.create_client(srv, srv_namespace)
         tries = 0
         while not self.cli.wait_for_service(timeout_sec=0.01):
-            self.get_logger().info(f'service {srv_namespace} not available, waiting again...')
+            #self.get_logger().info(f'service {srv_namespace} not available, waiting again...')
+            print('.', end='')
             tries += 1
             if tries > 100:
                 raise ServiceTimeoutException

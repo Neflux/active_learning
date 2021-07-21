@@ -48,5 +48,6 @@
         </geometry>
       </visual>
     </link>
-      </model>
+    <static>1</static>
+  </model>
 </sdf>

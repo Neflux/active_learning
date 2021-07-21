@@ -1,8 +1,6 @@
 import os
 import time
-import warnings
 from collections import defaultdict
-from copy import copy
 from functools import partial
 from pathlib import Path
 from shutil import copyfile
@@ -12,18 +10,18 @@ import rclpy
 from ament_index_python import get_package_share_directory
 from cv_bridge import CvBridge
 from nav_msgs.msg import Odometry
+from rclpy import Parameter
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import QoSReliabilityPolicy
 from sensor_msgs.msg import Image
-from std_msgs.msg import Int64, Float64
-from tables import PerformanceWarning
+from std_msgs.msg import Float64, Int16, Float32MultiArray, Float32
 
 from config import SENSORS
 
 try:  # Prioritize local src in case of PyCharm execution, no need to rebuild with colcon
     from utils_ros import quaternion_to_euler
-    from utils import binary_from_cv
+    from utils import binary_from_cv, str_from_bytes
 except ImportError:
     from elohim.utils_ros import quaternion_to_euler
     from elohim.utils import binary_from_cv
@@ -50,6 +48,8 @@ class Recorder(Node):
                     'min_itemsize': a dictionary that specifies the block size for the HDF5, for each column label
                         """
         super().__init__('recorder_node')
+        self.set_parameters([Parameter('use_sim_time', Parameter.Type.BOOL, True)])
+
         self.rlcpy = rclpy
         self.topics = topics
         r = min([v['qos'] for v in self.topics.values()])
@@ -147,16 +147,17 @@ class Recorder(Node):
         if self.should_save[key] and len(lst) > 0:
             df = pd.DataFrame(lst).drop_duplicates('time').set_index(
                 'time')  # TODO: no race condition, no artifacts?
-            #start = time.time()
+            # start = time.time()
             # with warnings.catch_warnings():
             #     warnings.filterwarnings("ignore", category=PerformanceWarning)
             #
             #
             #     with pd.HDFStore(file_path) as store:
             #         store.append(key, df, min_itemsize=min_itemsize)
+            #print(key, df)
             df.to_hdf(file_path, 'key', append=True, index=False, min_itemsize=min_itemsize)
 
-            #print(f'key: {key: <21}, time: {time.time()-start:.4f}')
+            # print(f'key: {key: <21}, time: {time.time()-start:.4f}')
             lst.clear()
             self.should_save[key] = False
 
@@ -172,7 +173,7 @@ class Recorder(Node):
         if simple:
             sum_bytes = sum([os.path.getsize(v["file_path"])
                              for v in self.topics.values() if os.path.exists(v["file_path"])])
-            if sum_bytes / 1000000000 > 5:
+            if sum_bytes / 1000000000 > 10: # Stop after 10 GIGS
                 return True
             output = f'\rFiles total size: {sum_bytes / 1000000.:.2f} MB'
         else:
@@ -204,7 +205,14 @@ def main(args=None):
               'ground_truth/odom': {'type': Odometry, 'qos': 10, 'reliability': best_effort, 'simplify': odom},
               'head_camera/image_raw': {'type': Image, 'qos': 30, 'reliability': best_effort, 'simplify': compress,
                                         'min_itemsize': {'image': 20000}},
-              'run_counter': {'type': Int64, 'qos': 30, 'simplify': lambda msg: {'run': msg.data}}}
+              'third_person/image_raw': {'type': Image, 'qos': 30, 'reliability': best_effort, 'simplify': compress,
+                                         'min_itemsize': {'image': 40000}},
+              'obstacles_hit': {'type': Int16, 'qos': 30, 'simplify': lambda msg: {'obstacles': msg.data}},
+              'target_theta': {'type': Float32, 'qos': 30, 'simplify': lambda msg: {'target_theta': msg.data}},
+              'predicted_map': {'type': Float32MultiArray, 'qos': 30,
+                                'simplify': lambda msg: {'predicted_map': str_from_bytes(msg.data)},
+                                'min_itemsize': {'predicted_map': 5000}},
+              'run_counter': {'type': Int16, 'qos': 30, 'simplify': lambda msg: {'run': msg.data}}}
     for s in SENSORS:
         topics[f'virtual_sensor/{s}'] = {'type': Float64, 'qos': 30, 'simplify': lambda msg, s=s: {s: msg.data}}
 

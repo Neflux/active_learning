@@ -1,0 +1,1 @@
+sudo mount.cifs //maia.idsia.ch/home maia/ -o user=stefano.bonato@supsi.ch,uid=$UID,gid=$GID,rw,vers=3

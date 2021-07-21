@@ -18,7 +18,7 @@ def _make_divisible(v, divisor, min_value=None):
 
 def recover_weights(model_dict):
     pretrained_dict = {k: v for k, v in load_state_dict_from_url('https://download.pytorch.org/models/mobilenet_v2'
-                                                                 '-b0353104.pth').items() if
+                                                                 '-b0353104.pth').items() if›
                        k in model_dict and v.shape == model_dict[k].shape}
 
     model_dict.update(pretrained_dict)

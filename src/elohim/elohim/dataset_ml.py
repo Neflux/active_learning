@@ -18,12 +18,12 @@ from tqdm import tqdm
 import config
 from utils import cv_from_binary, _moveaxis, scaled_full_robot_geometry, plot_transform, mktransf
 
-to_pil = transforms.Compose([transforms.ToPILImage(), transforms.Resize(120)])
+to_pil = transforms.Compose([transforms.ToPILImage(), transforms.Resize(60)])
 to_tensor = transforms.Compose([
         transforms.ToTensor(),  # outputs a (C x H x W) in the range [0.0, 1.0]
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
-def transform_function(resize=False, height=120):
+def transform_function(resize=False, height=120, hd=False):
     # Bayesian is lighter with this trick
     #height = 60
     #if resize:
@@ -103,18 +103,20 @@ def get_dataset(d_path, batch_size=8, keep=1., resize=False, test_only=False, sh
            for x in tqdm(sorted_sets, desc='Loading splits pickles into memory')]
 
     if not test_only and perc_train_set != 1.:
+
         comp = get_interesting_block_ids(dfs[0]).sort_values('pos')
+        comp = comp[comp['iterations'] > 1000]
         t = dfs[0]
 
         too_big_mask = comp['iterations'] < len(t) * perc_train_set
         if len(comp[too_big_mask]) == 0:
             print(f'the smallest block is bigger than the desired dataset ({perc_train_set*100}%)')
+            comp = comp.sort_values('iterations').iloc[:1]
         else:
             comp = comp[too_big_mask]
 
         ids = [comp.index[0]]
         comp = comp.iloc[1:]
-        diff = 0
         for i in range(2, len(comp) + 1):
 
             # If we have achieved the right size, exit
@@ -226,7 +228,7 @@ def main():
     compute_map_density(train_dataframe, sample_dir, 'Training set', emulate_random_flip=False)
     compute_map_density(test_dataframe, sample_dir, 'Testing set', emulate_random_flip=False)
 
-    for X, y in train_loader:
+    for X, y in test_loader:
         i = 0
         while True:
             fig, axs = plt.subplots(2, 1, figsize=(5, 8))

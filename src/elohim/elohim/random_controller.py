@@ -3,6 +3,7 @@ import itertools
 import json
 import os
 import time
+from collections import defaultdict
 from functools import partial
 
 import numpy as np
@@ -12,10 +13,12 @@ from gazebo_msgs.msg import EntityState
 from gazebo_msgs.srv import SetEntityState
 from geometry_msgs.msg import Twist, Pose, Vector3, Point
 from nav_msgs.msg import Odometry
+from rclpy import Parameter
 from rclpy.logging import LoggingSeverity
 from rclpy.node import Node
 from sensor_msgs.msg import Range
-from std_msgs.msg import Int64, Float64
+from std_msgs.msg import Float64, Int16
+from std_srvs.srv import Empty
 
 try:  # Prioritize local src in case of PyCharm execution, no need to rebuild with colcon
     from service_utils import SyncServiceCaller
@@ -30,25 +33,36 @@ except ImportError:
 class RandomController(Node):
     STOP_TWIST = Twist(linear=Vector3(x=0.))
     GO_TWIST = Twist(linear=Vector3(x=config.forward_velocity))
-    SENSORS = ['right', 'center_left', 'center', 'center_right', 'left']
-
-    # SENSORS = ['center']
+    SENSORS = config.SENSORS
 
     def __init__(self, plane_side: float = 10.1,
                  thymio_name: str = "thymioX",
+                 stop_threshold: float = None,
                  rate: int = 10) -> None:
+        ssc = SyncServiceCaller(rclpy)  # una tantum operations, sync -> ~1 request/sec
+        ssc(srv=Empty, srv_namespace="reset_world")
+        ssc(srv=Empty, srv_namespace="reset_simulation")
 
         super().__init__('random_controller')
+
+        self.set_parameters([Parameter('use_sim_time', Parameter.Type.BOOL, True)])
+
+        if stop_threshold is None:
+            stop_threshold = config.obstacle_dist_threshold
+
+        self.obstacle_dist_threshold = stop_threshold
         self.get_logger().set_level(LoggingSeverity.INFO)
 
         self.plane_side = plane_side
         self.robot_name = thymio_name
         self.raw_rate = rate
         self.run_counter = 0
-        self.ref_time = None
+        self.obstacles_hit = 0
+
+        self.ref_time = [None, None, None]
         self.state = 'idle'
 
-        self.radar = {k: 0.15 for k in self.SENSORS}
+        self.radar = {k: 0.12 for k in self.SENSORS}
 
         best_effort = rclpy.qos.QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT
         self.qos = rclpy.qos.QoSProfile(depth=self.raw_rate, reliability=best_effort)
@@ -60,7 +74,7 @@ class RandomController(Node):
         for sensor in self.SENSORS:
             self.signal_pub[sensor] = self.create_publisher(Float64, f'/{thymio_name}/virtual_sensor/{sensor}',
                                                             qos_profile=60)
-        self.run_counter_pub = self.create_publisher(Int64, f'/{thymio_name}/run_counter', qos_profile=60)
+        self.run_counter_pub = self.create_publisher(Int16, f'/{thymio_name}/run_counter', qos_profile=60)
 
         self.sensor_subs, self.odom_sub = [], None
         self.get_logger().debug("Subscribing (sensor and odometry)")
@@ -110,7 +124,8 @@ class RandomController(Node):
 
     def update_state(self, state):
         """ Updates internal state with specified str """
-        print(f'\r[Run {self.run_counter}] Status: {state}', end='')
+        print(f'\r[Run {self.run_counter}] Status: {state}, '
+              f'obstacles encountered so far: {self.obstacles_hit} ', end='')
         self.state = state
 
     def reset(self, msg, reset=False):
@@ -120,27 +135,29 @@ class RandomController(Node):
 
     def broadcast_run_id(self, id='auto'):
         """ Broadcasts the unique id of the run,  """
-        self.run_counter_pub.publish(Int64(data=(self.run_counter if id == 'auto' else id)))
+        self.run_counter_pub.publish(Int16(data=(self.run_counter if id == 'auto' else id)))
 
-    def time_elapsed(self, seconds):
+    def time_elapsed(self, seconds, key=0):
         """ Starts a simple home-made timer and checks whether it elapsed or not """
-        if self.ref_time is None:
-            self.ref_time = self.get_clock().now()
-        diff = self.get_clock().now() - self.ref_time
+        if self.ref_time[key] is None:
+            self.ref_time[key] = self.get_clock().now()
+        diff = self.get_clock().now() - self.ref_time[key]
         remaining = seconds - diff.nanoseconds * 1e-9
-        # print(f'\r timer {remaining if remaining > 0 else 0:.2f}s', end='')
+        # print(f'\r{key}: timer {self.get_clock().now(), diff, remaining}s')
         result = remaining < 0
         if result:
-            self.ref_time = None
+            self.ref_time[key] = None
             # print()
             return True
         return False
 
-    def new_run(self):
+    def new_run(self, reset_obstacles=True):
         self.update_state('ready')
-        self.subscribe()
-        self.run_counter += 1
+        if reset_obstacles:
+            self.obstacles_hit = 0
+            self.run_counter += 1
         self.verbose = f'Run {self.run_counter}, incomplete'
+        self.subscribe()
         # self.debug_radar = {k: np.inf for k in self.SENSORS}
 
     def sensor_callback(self, key, msg):
@@ -150,9 +167,11 @@ class RandomController(Node):
         # print(' '.join([f'{v:.2f}' for v in self.debug_radar.values()]))
         # if r < config.active_signal_threshold and key == 'center':
         #     signal = msg.range
-        if r < config.obstacle_dist_threshold:
+        if r < self.obstacle_dist_threshold:
             if self.state == 'running':
+                self.obstacles_hit += 1
                 self.reset(f'\'{key}\' sensor detected an object ({r:.6f})', reset=False)
+
         self.signal_pub[key].publish(Float64(data=r))
 
     def pose_callback(self, msg):
@@ -164,6 +183,8 @@ class RandomController(Node):
     def obstacle_nearby(self):
         return any([x < config.max_sensing_distance for x in self.radar.values()])
 
+    def get_ordered_readings(self):
+        return [self.radar[k] for k in self.SENSORS]
 
 def run(node, service_caller, x, y, t):
     """
@@ -190,6 +211,9 @@ def run(node, service_caller, x, y, t):
         time_looking_away = np.random.uniform(1, 16, size=1)
         node.go()
         while rclpy.ok():
+            # if node.time_elapsed(seconds=next_time_wait):
+            #     node.reset()
+            #     break
             id = 'auto'
 
             state = node.state

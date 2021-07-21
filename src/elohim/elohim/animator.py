@@ -1,26 +1,30 @@
-import itertools
+from functools import partial
 from functools import partial
 from math import sin, cos, sqrt
 from pathlib import Path
 
 import matplotlib
+import matplotlib.colors as clr
 import matplotlib.colors as mcolors
 import matplotlib.pylab as pl
 import matplotlib.pyplot as plt
-import matplotlib.colors as clr
 import numpy as np
 import pandas as pd
 from PIL import Image
 
-from utils import cv_from_binary, plot_transform, scaled_full_robot_geometry, mktransf
+from dataset_ml import transform_function
+from models import initialize_model
+from utils import cv_from_binary, plot_transform, scaled_full_robot_geometry, mktransf, bytes_from_str, \
+    predictions_from_dataframe
 
 matplotlib.rcParams['axes.unicode_minus'] = False
-from matplotlib import axes, figure, transforms, animation
+from matplotlib import axes, figure, transforms, animation, gridspec
 from matplotlib.animation import FuncAnimation
 from matplotlib.collections import LineCollection
 from matplotlib.colors import ListedColormap
 from matplotlib.lines import Line2D
-from matplotlib.patches import Polygon, Circle, Rectangle
+from matplotlib.patches import Polygon, Circle
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.spatial import distance
 from tqdm import tqdm
 
@@ -233,18 +237,6 @@ class Animator:
         self.anim = FuncAnimation(fig, self.animate, frames=frames, interval=1000. / rate, blit=True,
                                   init_func=self.init, repeat=True)
 
-        """ Subplot 5 - AUC """
-
-        # self.omap_preds = None
-        # if 'auc' in df.columns:
-        #     self.omap_preds = df['predicted_map'].map(lambda x: np.array(x).reshape(20, 20)).values
-        #     self.omap_preds = [cmap(x) for x in self.omap_preds]
-        #     ax4 = axs[4]axs
-
-        plt.tight_layout()
-        self.anim = FuncAnimation(fig, self.animate, frames=frames, interval=1000. / rate, blit=True,
-                                  init_func=self.init, repeat=True)
-
         if save_path is None:
             plt.show()
         else:
@@ -315,7 +307,8 @@ class Animator:
 
             artist['square_map'].set_xy([[x + cos(theta + i) * 0.4 * j, y + sin(theta + i) * 0.4 * j]
                                          for i, j in
-                                         zip([-np.pi/2, +np.pi/2, +np.arctan(0.5),-np.arctan(0.5)], [1, 1, np.sqrt(5), np.sqrt(5)])])
+                                         zip([-np.pi / 2, +np.pi / 2, +np.arctan(0.5), -np.arctan(0.5)],
+                                             [1, 1, np.sqrt(5), np.sqrt(5)])])
             # artist['square_map']._update_patch_transform()
             # artist['square_map'].stale = True
             # artist['square_map'].set_transform(matplotlib.transforms.Affine2D().rotate_deg(theta*180/np.pi+90)
@@ -358,3 +351,146 @@ class Animator:
             artists.append(self.occ_map_pred)
 
         return *artists,
+
+
+class TopDownAnimator:
+    def __init__(self, df, rate=30, save_path=None, s=None, extra_info=None, weights_path=None, samples=None):
+        # rc('axes', unicode_minus=False)
+        # rc('font', **{'family': 'sans-serif', 'sans-serif': ['Helvetica']})
+        plt.close()
+        self.rate = rate
+
+        Writer = animation.writers['ffmpeg']
+        writer = Writer(fps=rate, metadata=dict(artist='Me'), bitrate=1800)
+
+        if s is not None:
+            df = df.iloc[s]
+
+        frames = len(df)
+
+        # Cache
+
+        def extract_images(_df, column):
+            return _df[column] \
+                .progress_apply(cv_from_binary) \
+                .progress_apply(partial(Image.fromarray, mode="RGB")) \
+                .to_numpy()
+
+        self.front_feed = extract_images(df, 'head_camera_image_raw_image')
+        self.topdown_feed = extract_images(df, 'image')
+
+        self.run_counter = df['run'].to_numpy()
+        rd = df.groupby('run')['x'].count().astype(int)
+        rd = pd.DataFrame({'len': rd, 'end': rd.cumsum().astype(int)})
+        self.run_dict = rd.to_dict()
+
+        """ GridSpec Setup """
+
+        fig = plt.figure(tight_layout=True, figsize=(10, 6))
+        gs = gridspec.GridSpec(6, 6)
+
+        ax_top = fig.add_subplot(gs[:3, :3])
+        ax_front = fig.add_subplot(gs[:3, 3:])
+        ax_pred = fig.add_subplot(gs[3:, :2])
+        ax_entr = fig.add_subplot(gs[3:, 2:4])
+        ax_mutu = fig.add_subplot(gs[3:, 4:])
+        fig.align_labels()
+
+        fig.canvas.set_window_title(f'Simulations: {", ".join(df["run"].unique().astype(str))}')
+        if extra_info is not None:
+            plt.suptitle(','.join([f'{k}: {v}' for k, v in extra_info.items()]))
+
+        """ Subplot 1 - TopDown """
+
+        ax_top.set_title("Top Down View")
+        ax_top.axis('off')
+        self.top = ax_top.imshow(self.topdown_feed[0])
+
+        """ Subplot 2 - Camera Feed """
+
+        ax_front.set_title("Camera view")
+        ax_front.axis('off')
+        self.front = ax_front.imshow(self.front_feed[0])
+
+        """ Subplot 3 - Predicted Occupancy Map """
+
+        self.omap_preds = np.full((len(df), 20, 20), fill_value=0.5)
+        self.entr_preds = np.full((len(df), 20, 20), fill_value=0.5)
+        self.mutu_preds = np.full((len(df), 20, 20), fill_value=0.5)
+
+        ax_pred.set_title('Prediction', loc='center')
+        ax_entr.set_title('Entropy', loc='center')
+        ax_mutu.set_title('Mutual Information', loc='center')
+
+        if 'predicted_map' in df or weights_path is not None:
+            if weights_path is not None:
+                print('using model to emulate high frequency predictions')
+                bayes = samples is not None
+                model, batch_size, device, _ = initialize_model(32, samples=samples, weights_path=weights_path)
+                omap_preds, entr_maps, mi_maps = \
+                    predictions_from_dataframe(model, df, batch_size, device, bayes,
+                                               transform_function(bayes),
+                                               target_column='head_camera_image_raw_image')
+                self.entr_preds = entr_maps
+                self.mutu_preds = mi_maps
+            else:
+                print('using low frequency registered predictions')
+                omap_preds = df['predicted_map'].progress_apply(bytes_from_str).values
+                omap_preds = [np.array(x).reshape(20, 20) for x in omap_preds]
+
+            self.omap_preds = omap_preds
+
+        ax_pred.axis('off')
+        cmap = clr.LinearSegmentedColormap.from_list('diverging map', [(0, 'grey'), (0.5, 'red'), (1, 'yellow')], N=256)
+        self.omap_preds = [cmap(x) for x in self.omap_preds]
+        self.occ_map = ax_pred.imshow(self.omap_preds[0], cmap=cmap)
+        self.entr_map = ax_entr.imshow(self.entr_preds[0], cmap=cmap)
+        self.mutu_map = ax_mutu.imshow(self.mutu_preds[0], cmap=cmap)
+
+        for ax, imsh in zip([ax_pred, ax_entr, ax_mutu], [self.occ_map, self.entr_map, self.mutu_map]):
+            ax.set_aspect('equal')
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="10%", pad=0.3)
+            cbar = fig.colorbar(imsh, ax=ax, cax=cax)
+            #cbar.set_ticks([0, 0.5, 1])
+            #cbar.set_ticklabels([0, 0.5, 1])
+
+        ratio = 20 / 0.8
+        for r in scaled_full_robot_geometry(ratio):
+            plot_transform(ax_pred, mktransf((10 - 0.5, 20 - 0.5, -np.pi / 2)) @ r, color='white',
+                           length=config.max_sensing_distance * ratio)
+
+        ax_pred.plot([10 / 20, 0], [0, 0.5], linewidth=.8, linestyle='--', color='white', transform=ax_pred.transAxes)
+        ax_pred.plot([10 / 20, 1], [0, 0.5], linewidth=.8, linestyle='--', color='white', transform=ax_pred.transAxes)
+
+        """ Final Steps for animation and saving """
+
+        self.anim = FuncAnimation(fig, self.animate, frames=frames, interval=1000. / rate, blit=True,
+                                  init_func=self.init, repeat=True)
+
+        self.save_path = save_path
+        if save_path is None:
+            plt.show()  # for debugging
+        else:
+            plt.close()
+            Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+            self.anim.save(save_path, writer=writer,
+                           progress_callback=lambda i, n: print(f'\rProcessing animation: {i * 100. / n:.2f} %',
+                                                                end=''))
+            print(f"\rAnimation complete. Video file saved to: {save_path}")
+
+    def init(self):
+        self.top.set_data(self.topdown_feed[0])
+        self.front.set_data(self.front_feed[0])
+        self.occ_map.set_data(self.omap_preds[0])
+        self.entr_map.set_data(self.entr_preds[0])
+        self.mutu_map.set_data(self.mutu_preds[0])
+        return self.top, self.front, self.occ_map,self.entr_map,self.mutu_map,
+
+    def animate(self, i):
+        self.top.set_data(self.topdown_feed[i])
+        self.front.set_data(self.front_feed[i])
+        self.occ_map.set_data(self.omap_preds[i])
+        self.entr_map.set_data(self.entr_preds[i])
+        self.mutu_map.set_data(self.mutu_preds[i])
+        return self.top, self.front, self.occ_map,self.entr_map,self.mutu_map,

@@ -8,7 +8,8 @@ from tqdm import tqdm
 
 from dataset_ml import get_dataset
 from models import initialize_model
-from training import free_tensor, plot_entropy_auc_summary, visual_test
+from training import plot_entropy_auc_summary, visual_test
+from utils import free_tensor
 
 
 # This only works with a model that normalizes its output with a softmax
@@ -79,3 +80,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
