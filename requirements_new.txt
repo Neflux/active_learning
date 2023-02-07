@@ -58,7 +58,7 @@ colorama==0.4.3
 colorlog==4.1.0
 colormap==1.0.3
 coverage==5.1
-cryptography==2.9.2
+cryptography==39.0.1
 cycler==0.10.0
 decorator==4.4.2
 defusedxml==0.6.0
